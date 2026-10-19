@@ -1,0 +1,39 @@
+{
+  "name": "anyone-chat",
+  "version": "1.0.0",
+  "repository": { "type": "git", "url": "git+https://github.com/xmranonp/AnonChat.git" },
+  "description": "End-to-end encrypted messenger over Anyone Protocol hidden services. Your .anyone address is your identity.",
+  "main": "server.js",
+  "type": "commonjs",
+  "license": "AGPL-3.0-or-later",
+  "author": "xmranonp <xmranonp@users.noreply.github.com>",
+  "keywords": [
+    "encrypted-messenger",
+    "e2ee",
+    "double-ratchet",
+    "x3dh",
+    "anyone-protocol",
+    "onion-routing",
+    "privacy"
+  ],
+  "scripts": {
+    "start": "node start.js",
+    "web": "node server.js",
+    "test": "node tools/run-checks.mjs",
+    "test:crypto": "node tools/crypto-interop-test.mjs",
+    "checksums": "node tools/release-checksums.mjs"
+  },
+  "dependencies": {
+    "express": "4.22.3",
+    "axios": "^1.19.1",
+    "socks-proxy-agent": "^8.0.4",
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "overrides": {
+    "path-to-regexp": "0.1.13",
+    "qs": "^6.15.4"
+  }
+}

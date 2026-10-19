@@ -1,0 +1,165 @@
+{
+  "name": "anonchat-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AnonChat desktop launcher (Electron)",
+  "main": "main.js",
+  "desktopName": "anonchat.desktop",
+  "author": "xmranonp <xmranonp@users.noreply.github.com>",
+  "homepage": "https://github.com/xmranonp/AnonChat",
+  "repository": { "type": "git", "url": "git+https://github.com/xmranonp/AnonChat.git" },
+  "scripts": {
+    "start": "electron .",
+    "start:nosandbox": "ELECTRON_DISABLE_SANDBOX=1 electron . --no-sandbox",
+    "build": "electron-builder --linux deb pacman",
+    "build:deb": "electron-builder --linux deb",
+    "build:pacman": "electron-builder --linux pacman",
+    "build:rpm": "electron-builder --linux rpm",
+    "build:arch": "electron-builder --linux pacman",
+    "build:dir": "electron-builder --dir",
+    "start:win": "electron .",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "network.anyone.anonchat",
+    "productName": "AnonChat",
+    "files": [
+      "main.js",
+      "keystore.js",
+      "filename.js",
+      "preload.js",
+      "preload-splash.js",
+      "splash/**",
+      "build/**",
+      "!**/.git/**",
+      "!**/.DS_Store"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/app",
+        "to": "app",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/runtime",
+        "to": "runtime"
+      }
+    ],
+    "linux": {
+      "target": [
+        "deb",
+        "pacman"
+      ],
+      "category": "Network;InstantMessaging",
+      "icon": "build/icons",
+      "executableName": "anonchat",
+      "synopsis": "Encrypted messaging over the Anyone network",
+      "description": "End-to-end encrypted messenger that runs as a hidden service on the Anyone network.",
+      "maintainer": "xmranonp <xmranonp@users.noreply.github.com>",
+      "syncDesktopName": true
+    },
+    "deb": {
+      "depends": [
+        "libgtk-3-0",
+        "libnotify4",
+        "libnss3",
+        "libxss1",
+        "libxtst6",
+        "xdg-utils",
+        "libatspi2.0-0",
+        "libuuid1",
+        "libgbm1",
+        "libasound2"
+      ]
+    },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "asar": true,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "enableCookieEncryption": true,
+      "loadBrowserProcessSpecificV8Snapshot": false,
+      "grantFileProtocolExtraPrivileges": true,
+      "resetAdHocDarwinSignature": true
+    },
+    "compression": "normal",
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icons/icon.ico",
+      "executableName": "AnonChat"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "include": "build/installer.nsh"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.social-networking",
+      "icon": "build/icons/1024x1024.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "binaries": [
+        "Contents/Resources/runtime/node",
+        "Contents/Resources/runtime/anon"
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "AnonChat uses the microphone for voice messages and voice calls."
+      },
+      "notarize": false
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.dmg"
+    },
+    "rpm": {
+      "depends": [
+        "(gtk3 or libgtk-3-0)",
+        "(libnotify or libnotify4)",
+        "(nss or mozilla-nss)",
+        "(libXScrnSaver or libXss1)",
+        "(libXtst or libXtst6)",
+        "xdg-utils",
+        "(at-spi2-core or libatspi0)",
+        "(libuuid or libuuid1)",
+        "(mesa-libgbm or libgbm1)",
+        "(alsa-lib or libasound2)"
+      ],
+      "fpm": [
+        "--rpm-rpmbuild-define=_build_id_links none"
+      ]
+    },
+    "pacman": {
+      "depends": [
+        "libnotify",
+        "nss",
+        "libxss",
+        "libxtst",
+        "xdg-utils"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "license": "AGPL-3.0-or-later"
+}

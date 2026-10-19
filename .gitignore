@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+desktop/node_modules/
+
+# Runtime data — identities, contacts, message queues. Never commit these.
+data/*.json
+data/*.tmp
+!data/.gitkeep
+
+# anon binary's own state (keys, cached consensus, sockets, logs)
+anon/anonrc
+anon/anon_service/
+anon/cached*
+anon/keys/
+anon/lock
+anon/*.log
+
+# Desktop packaging output
+desktop/resources/
+desktop/dist/
+
+# Editor / OS cruft
+.DS_Store
+.vscode/
+*.log
+npm-debug.log*

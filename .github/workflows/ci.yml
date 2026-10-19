@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Reproducible install from the committed lockfile.
+      - name: Install (root)
+        run: npm ci
+
+      # Syntax, crypto interop (Double Ratchet + X3DH), i18n parity, CSS balance.
+      - name: Checks
+        run: npm test
+
+      # Validate the pure-JS xz decompressor byte-for-byte against system xz.
+      - name: xz decompressor vs system xz
+        run: |
+          sudo apt-get update && sudo apt-get install -y xz-utils
+          node tools/verify-xz.mjs
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Fail the build on HIGH/CRITICAL advisories in either dependency tree.
+      - name: npm audit (root)
+        run: npm audit --omit=dev --audit-level=high
+      - name: npm audit (desktop)
+        working-directory: desktop
+        run: npm audit --audit-level=high
+
+  # Clean desktop install from the lockfile and a real (unpacked) Linux build, so a lockfile that disagrees with
+  # package.json, or a packaging problem, fails here instead of on someone's machine.
+  desktop-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install (desktop, exact versions from the lockfile)
+        working-directory: desktop
+        run: npm ci
+
+      - name: Installed Electron is the one package.json asks for
+        working-directory: desktop
+        run: |
+          want=$(node -p "require('./package.json').devDependencies.electron")
+          got=$(node -p "require('electron/package.json').version")
+          echo "Electron: package.json $want, installed $got"
+          test "$want" = "$got"
+
+      # The real anon binary isn't needed to check packaging: a stand-in file takes its place.
+      - name: Stage resources
+        working-directory: desktop
+        run: |
+          printf '#!/bin/sh\necho stand-in\n' > "$RUNNER_TEMP/anon" && chmod +x "$RUNNER_TEMP/anon"
+          ANON_BIN="$RUNNER_TEMP/anon" ./prepare-resources.sh
+
+      - name: Build (unpacked)
+        working-directory: desktop
+        run: npm run build:dir
+
+      - name: Electron fuses are set in the packaged app
+        working-directory: desktop
+        run: |
+          npx --yes @electron/fuses read --app dist/linux-unpacked/anonchat | tee fuses.txt
+          grep -Eq 'RunAsNode.*Disabled' fuses.txt
+          grep -Eq 'EnableNodeOptionsEnvironmentVariable.*Disabled' fuses.txt
+          grep -Eq 'EnableNodeCliInspectArguments.*Disabled' fuses.txt
+          grep -Eq 'OnlyLoadAppFromAsar.*Enabled' fuses.txt

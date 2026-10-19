@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AnonChat</title>
+<link rel="icon" type="image/png" href="/app-icon.png">
+  <link rel="stylesheet" href="styles.css" />
+  <script src="no-rtc.js"></script>
+  <script src="pre-theme.js"></script>
+</head>
+<body>
+  <div id="pin-screen">
+    <div class="pin-inner">
+      <img class="pin-logo" src="/app-icon.png" alt="" width="56" height="56">
+      <div class="pin-brand"><b>Anon</b>Chat</div>
+      <p class="pin-sub" id="pin-sub">Enter your PIN</p>
+      <div class="pin-dots" id="pin-dots">
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+      </div>
+      <p class="pin-error" id="pin-error"></p>
+      <div class="pin-pad">
+        <button class="pin-key" data-n="1">1</button>
+        <button class="pin-key" data-n="2">2</button>
+        <button class="pin-key" data-n="3">3</button>
+        <button class="pin-key" data-n="4">4</button>
+        <button class="pin-key" data-n="5">5</button>
+        <button class="pin-key" data-n="6">6</button>
+        <button class="pin-key" data-n="7">7</button>
+        <button class="pin-key" data-n="8">8</button>
+        <button class="pin-key" data-n="9">9</button>
+        <button class="pin-key pin-clear" id="pin-clear">⌫</button>
+        <button class="pin-key" data-n="0">0</button>
+        <button class="pin-key pin-ok" id="pin-ok">✓</button>
+      </div>
+      <p class="pin-hint" id="pin-hint"></p>
+    </div>
+  </div>
+
+  <div id="app">
+
+    <aside id="rail">
+      <header class="brand">
+        <div class="brand-mark">
+          <img class="brand-logo" src="/app-icon.png" alt="" width="34" height="34">
+          <div class="brand-title">
+            <span class="brand-name"><b>Anon</b>Chat</span>
+            <span class="brand-version">v1.0.0</span>
+          </div>
+          <span class="net-dot" id="ws-dot" aria-hidden="true"></span>
+        </div>
+        <div class="brand-controls">
+          <button class="ctl-btn" id="logs-btn" type="button" title="Network status" data-i18n-attr="title:nav.networkStatus">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/>
+            </svg>
+          </button>
+          <button class="ctl-btn" id="sound-btn" type="button"></button>
+        </div>
+      </header>
+
+      <div id="me"></div>
+
+      <div class="rail-scroll">
+        <div class="rail-head">
+          <span data-i18n="contacts.title">Contacts</span>
+          <div class="grp-head-btns">
+            <button id="requests-btn" type="button" class="icon-pill" aria-haspopup="dialog" aria-expanded="false" data-i18n-attr="title:req.title,aria-label:req.title">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+              <span class="req-dot" aria-hidden="true"></span>
+            </button>
+            <button id="add-contact-btn" data-i18n="contacts.add">Add contact</button>
+          </div>
+        </div>
+        <div id="contacts"></div>
+
+        <div class="rail-head">
+          <span data-i18n="groups.title">Groups</span>
+          <div class="grp-head-btns">
+            <button id="join-group-btn" title="Join group from invite code" data-i18n="groups.join" data-i18n-attr="title:groups.joinTip">Join</button>
+            <button id="new-group-btn" data-i18n="groups.new">New group</button>
+          </div>
+        </div>
+        <div id="groups"></div>
+      </div>
+    </aside>
+
+    <main id="conv">
+      <div id="log-panel" class="log-panel" hidden>
+        <div class="log-head">
+          <div class="log-relay-mini">
+            <span class="lrn"></span><span class="lrw"></span>
+            <span class="lrn"></span><span class="lrw"></span>
+            <span class="lrn"></span>
+          </div>
+          <span class="log-head-title" data-i18n="nav.networkStatus">Network Status</span>
+          <button class="ctl-btn" id="log-close" type="button">✕</button>
+        </div>
+        <div class="log-tabs">
+          <button class="log-tab on" data-tab="status"   type="button" data-i18n="tabs.status">Status</button>
+          <button class="log-tab"    data-tab="circuits" type="button" data-i18n="tabs.circuits">Circuits</button>
+          <button class="log-tab"    data-tab="map"      type="button" data-i18n="relaymap.tab">Map</button>
+        </div>
+        <div class="net-toolbar" id="net-toolbar" hidden>
+          <div class="net-row top">
+            <div class="net-text">
+              <div class="net-title" data-i18n="exit.title">Exit country</div>
+              <div class="net-sub" id="exit-sub"></div>
+              <div class="net-note" data-i18n="exit.note"></div>
+            </div>
+            <div class="exit-dd">
+              <button type="button" class="exit-btn" id="exit-btn" aria-haspopup="listbox" aria-expanded="false"></button>
+              <div class="exit-pop" id="exit-pop" hidden>
+                <input type="text" class="exit-search" id="exit-search" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:exit.search,aria-label:exit.search">
+                <div class="exit-list" id="exit-list" role="listbox"></div>
+              </div>
+            </div>
+          </div>
+          <div class="net-grid">
+            <div class="net-col">
+              <div class="net-line">
+                <button type="button" class="sw" id="dyn-port-sw" role="switch" aria-checked="true" data-i18n-attr="aria-label:port.title"><span class="sw-thumb"></span></button>
+                <div class="net-title" data-i18n="port.title">Dynamic port</div>
+              </div>
+              <div class="net-note" id="port-sub"></div>
+              <div class="net-socks" id="net-socks"></div>
+              <div class="net-note" data-i18n="port.socksHint"></div>
+            </div>
+            <div class="net-col net-col-right">
+              <button type="button" class="net-btn" id="new-circuit-btn" data-i18n-attr="title:circuits.renewDesc"><span class="net-btn-ico" aria-hidden="true">↺</span><span class="net-btn-label" data-i18n="nav.newCircuit">Request new circuit</span></button>
+              <div class="net-note" data-i18n="circuits.renewDesc"></div>
+            </div>
+          </div>
+        </div>
+        <div class="log-stats"  id="log-stats"></div>
+        <div class="hs-health"  id="hs-health"></div>
+        <div class="bw-meter"   id="bw-meter" hidden></div>
+        <pre class="log-body"   id="log-body"></pre>
+        <div class="circuits-body" id="circuits-body" hidden></div>
+        <div class="globe-body"    id="globe-body"    hidden>
+          <div class="globe-stage" id="globe-stage"></div>
+          <div class="globe-seg" role="group" aria-label="Circuit type" data-i18n-attr="aria-label:relaymap.circuitTypeLabel">
+            <button type="button" class="globe-seg-btn on" id="seg-socks" data-ctype="socks" data-i18n="relaymap.socks" data-i18n-attr="title:relaymap.socksTip">SOCKS</button>
+            <button type="button" class="globe-seg-btn"    id="seg-hs"    data-ctype="hs"    data-i18n="relaymap.hs" data-i18n-attr="title:relaymap.hsTip">Hidden</button>
+          </div>
+          <div class="globe-focus" id="globe-focus" hidden>
+            <span class="globe-focus-title" id="globe-focus-title"></span>
+            <select class="globe-contact" id="globe-contact" aria-label="Contact" data-i18n-attr="aria-label:relaymap.pick"></select>
+            <button type="button" class="globe-focus-all" id="globe-focus-all" data-i18n="relaymap.showAll">Show all</button>
+          </div>
+          <div class="globe-loading" id="globe-loading" hidden></div>
+          <div class="globe-caption" id="globe-caption" data-i18n="relaymap.caption">Relay map — no relays connected yet</div>
+          <div class="globe-note" id="globe-note" hidden></div>
+          <div class="globe-fallback" id="globe-fallback" hidden></div>
+          <button class="globe-reset" id="globe-reset" type="button" data-i18n-attr="title:relaymap.reset,aria-label:relaymap.reset" title="Reset view" aria-label="Reset view">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div id="conv-head"></div>
+      <div id="call-dock" hidden></div>
+      <div id="conv-body"></div>
+      <button id="jump-latest" type="button" hidden aria-label="Jump to the latest message" title="Jump to the latest message" data-i18n-attr="title:nav.jumpLatest,aria-label:nav.jumpLatest">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+
+      <div id="composer" style="display:none">
+        <div id="emoji-pop"></div>
+        <div class="composer-pill">
+          <button class="pill-btn pill-side" id="emoji-btn" type="button" data-i18n-attr="aria-label:compose.emoji">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 13s1.5 2 4 2 4-2 4-2"/><circle cx="9" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="9" r="1" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <textarea id="msg-input" rows="1" data-i18n-attr="placeholder:compose.placeholder"></textarea>
+          <button class="pill-btn pill-side" id="file-btn" type="button" data-i18n-attr="aria-label:compose.attach">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+          </button>
+          <div id="rec-bar" aria-live="off">
+            <button class="pill-btn" id="rec-cancel" type="button" data-i18n-attr="aria-label:rec.cancel">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+            </button>
+            <span class="rec-dot"></span>
+            <span id="rec-time">0:00</span>
+          </div>
+          <button class="pill-btn pill-action pill-voice" id="voice-btn" type="button" data-i18n-attr="aria-label:compose.voice">
+            <svg class="ico-mic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          
+            <svg class="ico-send" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
+        <input type="file" id="file-input" accept="image/*,audio/*,video/*,.pdf,.doc,.docx,.txt,.zip" hidden />
+      </div>
+    </main>
+  </div>
+
+  <!-- Name a contact: used when accepting a message request and when renaming a contact -->
+  <dialog id="name-dialog">
+    <form method="dialog" id="name-form">
+      <div class="dialog-head">
+        <h2 id="name-title"></h2>
+      </div>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="in-nickname" data-i18n="contacts.nameLabel">Name (only you see this)</label>
+          <input id="in-nickname" maxlength="40" autocomplete="off" data-i18n-attr="placeholder:contacts.namePlaceholder" />
+        </div>
+        <div class="field">
+          <span class="field-label" data-i18n="req.addressLabel">.anyone address</span>
+          <div id="name-addr" class="name-addr"></div>
+        </div>
+      </div>
+      <div id="name-status" role="status"></div>
+      <div class="dialog-foot">
+        <button class="btn" id="name-cancel" type="button" data-i18n="nav.cancel">Cancel</button>
+        <button class="btn primary" id="name-ok" type="submit"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="add-dialog">
+    <div class="dialog-head">
+      <h2 data-i18n="contacts.addTitle">Add a contact</h2>
+    </div>
+    <div class="dialog-body">
+      <div class="field">
+        <label for="in-petname" data-i18n="contacts.nameLabel">Name (only you see this)</label>
+        <input id="in-petname" maxlength="40" autocomplete="off" data-i18n-attr="placeholder:contacts.namePlaceholder" />
+      </div>
+      <div class="field">
+        <label for="in-address" data-i18n="contacts.addressLabel">Their .anyone address</label>
+        <input id="in-address" autocomplete="off" spellcheck="false" data-i18n-attr="placeholder:contacts.addressPlaceholder" />
+      </div>
+    </div>
+    <div id="add-status"></div>
+    <div class="dialog-foot">
+      <button class="btn" id="add-cancel" type="button" data-i18n="nav.cancel">Cancel</button>
+      <button class="btn primary" id="add-confirm" type="submit" data-i18n="contacts.addConfirm">Add contact</button>
+    </div>
+  </dialog>
+
+  <div id="avatar-zoom" hidden>
+    <div id="avatar-zoom-inner"></div>
+  </div>
+
+  <dialog id="new-group-dialog">
+    <div class="dialog-head">
+      <h2 data-i18n="groups.newTitle">New group chat</h2>
+    </div>
+    <div class="dialog-body">
+      <div class="grp-new-top">
+        <div id="grp-pic-new"></div>
+        <div class="field">
+          <label data-i18n="groups.nameLabel">Group name</label>
+          <input id="grp-name" maxlength="40" autocomplete="off" data-i18n-attr="placeholder:groups.namePlaceholder" />
+        </div>
+      </div>
+      <div class="field">
+        <label data-i18n="groups.description">Description</label>
+        <textarea id="grp-desc-new" maxlength="280" rows="2" autocomplete="off" data-i18n-attr="placeholder:groups.descPlaceholder"></textarea>
+      </div>
+      <div class="field">
+        <label data-i18n="groups.membersLabel">Members</label>
+        <div id="grp-member-list" class="grp-member-list"></div>
+      </div>
+    </div>
+    <div id="grp-status"></div>
+    <div class="dialog-foot">
+      <button class="btn" id="grp-cancel" type="button" data-i18n="nav.cancel">Cancel</button>
+      <button class="btn primary" id="grp-create" type="button" data-i18n="groups.create">Create</button>
+    </div>
+  </dialog>
+
+  <input type="file" id="avatar-input" accept="image/*" hidden />
+  <div id="toast"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

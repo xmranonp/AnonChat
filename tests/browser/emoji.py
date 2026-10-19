@@ -1,0 +1,71 @@
+import subprocess, os, time, tempfile, json
+from playwright.sync_api import sync_playwright
+import sys
+import sys as _sys, os as _os; _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__))); import _args
+import sys
+APP, SHIM, OUT = _args.paths(__file__); TOKEN='f'*64
+d=tempfile.mkdtemp(); os.makedirs(d+'/anon/anon_service'); os.makedirs(d+'/data')
+open(d+'/anon/anon_service/hostname','w').write('c'*56+'.anyone\n')
+json.dump([{'address':'b'*56+'.anyone','petname':'Ana','ecdhPub':'K','ratchetPub':'R'}], open(d+'/data/contacts.json','w'))
+env=dict(os.environ, NODE_PATH=SHIM, PUBLIC_PORT='6602', UI_PORT='6601', DATA_DIR=d+'/data', ANON_DIR=d+'/anon', ANONCHAT_UI_TOKEN=TOKEN, ANON_CTRL_PORT='1', PEERS='{}')
+p=subprocess.Popen(['node',APP+'/server.js'],env=env,cwd=APP,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); time.sleep(1.8)
+
+results=[]
+def check(name, ok, detail=''):
+    results.append(ok); print(('PASS ' if ok else 'FAIL ') + name + ('' if ok else '  [' + str(detail) + ']'), flush=True)
+try:
+  with sync_playwright() as pw:
+    b=pw.chromium.launch(); ctx=b.new_context(viewport={'width':1180,'height':820}); pg=ctx.new_page()
+    errs=[]; pg.on('pageerror', lambda e: errs.append(str(e)))
+    pg.goto(f'http://127.0.0.1:6601/?t={TOKEN}')
+    pg.wait_for_selector('.welcome-cta'); pg.click('.welcome-cta'); pg.wait_for_timeout(300)
+    for _ in range(2):
+      for dg in '123456': pg.click(f'.pin-key:text-is("{dg}")')
+      pg.wait_for_timeout(300)
+    pg.wait_for_selector('#pin-screen.gone', state='attached', timeout=15000); pg.wait_for_timeout(1500)
+    pg.click('text=Ana'); pg.wait_for_timeout(500)
+    pg.click('#emoji-btn'); pg.wait_for_timeout(400)
+    h0 = pg.evaluate("document.getElementById('emoji-pop').getBoundingClientRect().height")
+    check('opening the picker puts the cursor in the search box', pg.evaluate("document.activeElement === document.querySelector('.emoji-search input')"))
+    check('placeholder says names are English', 'English' in pg.get_attribute('.emoji-search input', 'placeholder'))
+    pg.keyboard.type('cat'); pg.wait_for_timeout(600)
+    labels = pg.eval_on_selector_all('.emoji-results .emoji', 'bs => bs.map(b => b.getAttribute("aria-label"))')
+    imgs = pg.eval_on_selector_all('.emoji-results .emoji img', 'is => is.map(i => i.alt)')
+    check('“cat” finds the cats: cat, cat face, then the rest', len(imgs) >= 10 and imgs[0] == '🐈' and imgs[1] == '🐱' and '🙀' in imgs, imgs[:12])
+    check('results have English names as tooltips', labels and labels[:2] == ['cat', 'cat face'], labels[:3])
+    check('the categories are hidden while searching', pg.evaluate("[...document.querySelectorAll('#emoji-pop .emoji-section:not(.emoji-results)')].every(s => s.hidden || getComputedStyle(s).display === 'none')"))
+    check('the picker keeps its height', abs(pg.evaluate("document.getElementById('emoji-pop').getBoundingClientRect().height") - h0) < 1)
+    pg.screenshot(path=OUT+'/1-cat.png')
+    pg.fill('.emoji-search input', 'laugh'); pg.wait_for_timeout(300)
+    imgs = pg.eval_on_selector_all('.emoji-results .emoji img', 'is => is.map(i => i.alt)')
+    check('“laugh” finds 😂 and 🤣 by keyword', '😂' in imgs and '🤣' in imgs, imgs)
+    pg.fill('.emoji-search input', 'thumbs up'); pg.wait_for_timeout(300)
+    imgs = pg.eval_on_selector_all('.emoji-results .emoji img', 'is => is.map(i => i.alt)')
+    check('two words: “thumbs up” → 👍 first', imgs and imgs[0] == '👍', imgs[:5])
+    pg.fill('.emoji-search input', 'portugal'); pg.wait_for_timeout(300)
+    imgs = pg.eval_on_selector_all('.emoji-results .emoji img', 'is => is.map(i => i.alt)')
+    check('flags by country name', imgs == ['🇵🇹'], imgs)
+    pg.fill('.emoji-search input', 'zzqx'); pg.wait_for_timeout(300)
+    check('nothing found: a message, not an empty box', 'zzqx' in pg.inner_text('.emoji-empty'))
+    pg.screenshot(path=OUT+'/2-none.png')
+    pg.fill('.emoji-search input', 'pizza'); pg.wait_for_timeout(300)
+    pg.click('.emoji-results .emoji'); pg.wait_for_timeout(300)
+    check('clicking a result inserts it', '🍕' in pg.input_value('#msg-input'), pg.input_value('#msg-input'))
+    pg.click('#emoji-btn') if not pg.evaluate("document.getElementById('emoji-pop').classList.contains('open')") else None
+    pg.wait_for_timeout(300)
+    pg.fill('.emoji-search input', 'pizza'); pg.wait_for_timeout(300)
+    pg.press('.emoji-search input', 'Escape'); pg.wait_for_timeout(200)
+    check('Esc clears the search and brings the categories back', pg.input_value('.emoji-search input') == '' and pg.evaluate("document.querySelector('.emoji-results').hidden") and pg.evaluate("document.getElementById('emoji-pop').classList.contains('open')"))
+    check('…the pizza is now in Recent', pg.evaluate("[...document.querySelectorAll('.emoji-section[data-cat=recent] img')].some(i => i.alt === '🍕')"))
+    pg.press('.emoji-search input', 'Escape'); pg.wait_for_timeout(200)
+    check('a second Esc closes the picker', not pg.evaluate("document.getElementById('emoji-pop').classList.contains('open')"))
+    pg.click('#emoji-btn'); pg.wait_for_timeout(300)
+    pg.keyboard.type('dog'); pg.wait_for_timeout(300)
+    pg.click('.emoji-nav-btn[data-cat="food"]'); pg.wait_for_timeout(300)
+    check('a category tab during a search goes back to the categories', pg.input_value('.emoji-search input') == '' and pg.evaluate("document.querySelector('.emoji-results').hidden"))
+    named = pg.evaluate("import('./emoji-names.js').then(m => Object.keys(m.EMOJI_NAMES).length)")
+    check('names loaded only on demand, for ~1900 emojis', named > 1900, named)
+    check('no page errors', not errs, errs)
+    b.close()
+finally: p.kill()
+print(f"{sum(results)}/{len(results)} passed")

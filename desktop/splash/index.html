@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AnonChat</title>
+<style>
+  @import url('about:blank');
+  @font-face { font-family: 'Inter'; font-weight: 400; src: url('fonts/Inter-Regular.woff') format('woff'); }
+  @font-face { font-family: 'Inter'; font-weight: 600; src: url('fonts/Inter-SemiBold.woff') format('woff'); }
+  @font-face { font-family: 'Inter'; font-weight: 700; src: url('fonts/Inter-Bold.woff') format('woff'); }
+  @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; src: url('fonts/IBMPlexMono-Regular.woff') format('woff'); }
+  :root {
+    --ink: #1A1A1A; --panel: #202020; --border: #333333;
+    --text: #ECECEC; --dim: #A8A8A8; --muted: #6E6E6E;
+    --signal: #1BC1EF; --signal-rgb: 27,193,239;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--ink); color: var(--text);
+    font-family: 'Inter', sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; user-select: none; overflow: hidden;
+    border: 1px solid var(--border); border-radius: 12px;
+  }
+
+  .logo { width: 44px; height: 44px; display: block; margin-bottom: -6px; }
+  .wordmark { font-size: 26px; font-weight: 700; letter-spacing: 0.005em; }
+  .wordmark b { color: inherit; font-weight: inherit; }
+
+  .relay { display: flex; align-items: center; gap: 14px; }
+  .relay .node {
+    width: 13px; height: 13px; border-radius: 50%;
+    background: var(--panel); border: 1.5px solid var(--border); position: relative;
+  }
+  .relay .node::after {
+    content: ''; position: absolute; inset: -1.5px; border-radius: 50%;
+    background: var(--signal); opacity: 0;
+  }
+  .relay .wire { width: 34px; height: 1.5px; background: var(--border); position: relative; overflow: hidden; }
+  .relay .wire::after {
+    content: ''; position: absolute; top: 0; left: -40%; width: 40%; height: 100%;
+    background: linear-gradient(90deg, transparent, var(--signal), transparent);
+    animation: flow 2.1s linear infinite;
+  }
+  .relay .wire.w2::after { animation-delay: 1.05s; }
+  .relay .node.n1::after { animation: lit 2.1s infinite 0s; }
+  .relay .node.n2::after { animation: lit 2.1s infinite 0.7s; }
+  .relay .node.n3::after { animation: lit 2.1s infinite 1.4s; }
+  @keyframes flow { to { left: 140%; } }
+  @keyframes lit {
+    0%,100% { opacity: 0; box-shadow: 0 0 0 0 rgba(var(--signal-rgb),0); }
+    18% { opacity: 1; box-shadow: 0 0 12px 2px rgba(var(--signal-rgb),0.6); }
+    36% { opacity: 0; }
+  }
+
+  .status {
+    font-family: 'IBM Plex Mono', monospace; font-size: 12px;
+    color: var(--dim); letter-spacing: 0.02em; min-height: 16px; text-align: center;
+  }
+  .bar { width: 240px; height: 3px; background: var(--panel); border-radius: 2px; overflow: hidden; }
+  .bar > i {
+    display: block; height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--signal), #6ADBF8);
+    border-radius: 2px; transition: width 0.5s ease;
+  }
+  .hint { font-family: 'IBM Plex Mono', monospace; font-size: 10px; color: var(--muted); }
+  .hint.long { text-align: center; padding: 0 32px; line-height: 1.6; font-size: 11px; color: var(--text, #ddd); }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
+
+  /* Passphrase steps (only when this computer's data is protected by a passphrase, or has no keyring) */
+  body.keymode .relay, body.keymode .status, body.keymode .bar, body.keymode .hint { display: none; }
+  .key { display: none; width: 340px; flex-direction: column; align-items: stretch; gap: 10px; user-select: text; }
+  body.keymode .key { display: flex; }
+  .key h1 { font-size: 17px; font-weight: 600; text-align: center; margin-bottom: 2px; }
+  .key p { font-size: 12.5px; line-height: 1.5; color: var(--dim); text-align: center; }
+  .key .fld { position: relative; }
+  .key input { width: 100%; padding: 10px 56px 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel);
+    color: var(--text); font: 400 14px 'Inter', sans-serif; outline: none; }
+  .key input:focus { border-color: var(--signal); box-shadow: 0 0 0 3px rgba(var(--signal-rgb), 0.22); }
+  .key .show { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--muted);
+    font: 400 12px 'Inter', sans-serif; cursor: pointer; padding: 4px 6px; }
+  .key .go { padding: 10px; border-radius: 8px; border: 1px solid var(--signal); background: var(--signal); color: #04141C;
+    font: 600 14px 'Inter', sans-serif; cursor: pointer; }
+  .key .go:disabled { opacity: 0.55; cursor: default; }
+  .key .err { min-height: 16px; font-size: 12px; color: #E86A6A; text-align: center; }
+  .key .links { display: flex; justify-content: center; gap: 16px; }
+  .key .links button { background: none; border: none; color: var(--muted); font: 400 12px 'Inter', sans-serif; cursor: pointer; text-decoration: underline; }
+  .key .links button:hover { color: var(--text); }
+  .key .danger { padding: 9px; border-radius: 8px; border: 1px solid #E86A6A; background: transparent; color: #E86A6A;
+    font: 600 13px 'Inter', sans-serif; cursor: pointer; }
+  .key .danger:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+  <img class="logo" src="app-icon.png" alt="" width="44" height="44" draggable="false">
+  <div class="wordmark"><b>Anon</b>Chat</div>
+  <div class="relay">
+    <span class="node n1"></span>
+    <span class="wire w1"></span>
+    <span class="node n2"></span>
+    <span class="wire w2"></span>
+    <span class="node n3"></span>
+  </div>
+  <div class="status" id="status">starting node…</div>
+  <div class="bar"><i id="bar"></i></div>
+  <div class="hint" id="hint">building circuits over the Anyone network</div>
+  <form class="key" id="key" autocomplete="off"></form>
+
+<script>
+  const on = window.splash.on;
+
+  const statusEl = document.getElementById('status');
+  const barEl    = document.getElementById('bar');
+  const hintEl   = document.getElementById('hint');
+
+  on('bootstrap-progress', (pct) => {
+    pct = Number(pct) || 0;
+    barEl.style.width = pct + '%';
+    statusEl.textContent = `bootstrapping… ${pct}%`;
+    if (pct >= 100) statusEl.textContent = S.publishing;
+  });
+
+  on('backend-log', (line) => {
+    line = String(line || '');
+    if (/error|fail/i.test(line)) hintEl.textContent = line.slice(0, 60);
+  });
+
+  on('backend-ready', () => {
+    barEl.style.width = '100%';
+    statusEl.textContent = S.connected;
+  });
+
+  on('backend-timeout', () => {
+    statusEl.textContent = S.slow;
+    hintEl.textContent = S.slowHint;
+  });
+
+  // ---- Passphrase steps ----
+  // In the system's language (the window's own language setting isn't readable before the data is unlocked).
+  const T = {
+    en: { connected: "connected", publishing: "publishing your address…", slow: "taking longer than expected…", slowHint: "the network may be slow — still trying", startFailed: "could not start", portBusy: "Another program is using the port AnonChat needs (47822). Close it and start AnonChat again.", enter: 'Enter your passphrase', unlock: 'Unlock', unlocking: 'Unlocking…', enterNote: 'Connecting to the Anyone network starts after you unlock.',
+      choose: 'Choose a passphrase', chooseNote: 'This system has no keyring to keep your encryption key, so AnonChat protects your data with a passphrase instead.',
+      again: 'Type it again', cont: 'Continue', show: 'Show', hide: 'Hide', quit: 'Quit', forgot: 'Forgot it?',
+      wrong: 'Wrong passphrase', empty: 'Type your passphrase', short: 'At least {n} characters', mismatch: 'The two don’t match',
+      forgotTitle: 'Forgot your passphrase?', forgotNote: 'Nobody can recover it. You can erase everything on this computer and start over with a new identity. Your contacts will need your new address.',
+      word: 'ERASE', typeWord: 'To confirm, type: {w}', erase: 'Erase and quit', back: 'Back',
+      errTitle: 'Couldn’t unlock your data', vault: 'The system keyring didn’t give back AnonChat’s key. If you changed your login password or keyring recently, unlock the keyring and open AnonChat again.',
+      novault: 'Your data is protected by the system keyring, which isn’t available right now. Sign in to your desktop session normally and open AnonChat again.',
+      damaged: 'The file that holds the key to your data is damaged. Nothing has been changed.', startOver: 'Start over…' },
+    es: { connected: "conectado", publishing: "publicando tu dirección…", slow: "está tardando más de lo esperado…", slowHint: "puede que la red vaya lenta; seguimos intentándolo", startFailed: "no se pudo iniciar", portBusy: "Otro programa está usando el puerto que AnonChat necesita (47822). Ciérralo y vuelve a abrir AnonChat.", enter: 'Escribe tu frase de contraseña', unlock: 'Desbloquear', unlocking: 'Desbloqueando…', enterNote: 'La conexión a la red Anyone empieza después de desbloquear.',
+      choose: 'Elige una frase de contraseña', chooseNote: 'Este sistema no tiene un llavero para guardar tu clave de cifrado, así que AnonChat protege tus datos con una frase de contraseña.',
+      again: 'Escríbela otra vez', cont: 'Continuar', show: 'Mostrar', hide: 'Ocultar', quit: 'Salir', forgot: '¿La olvidaste?',
+      wrong: 'Frase de contraseña incorrecta', empty: 'Escribe tu frase de contraseña', short: 'Al menos {n} caracteres', mismatch: 'No coinciden',
+      forgotTitle: '¿Olvidaste tu frase de contraseña?', forgotNote: 'Nadie puede recuperarla. Puedes borrar todo en este ordenador y empezar de nuevo con una identidad nueva. Tus contactos necesitarán tu nueva dirección.',
+      word: 'BORRAR', typeWord: 'Para confirmar, escribe: {w}', erase: 'Borrar y salir', back: 'Volver',
+      errTitle: 'No se pudieron desbloquear tus datos', vault: 'El llavero del sistema no devolvió la clave de AnonChat. Si cambiaste hace poco tu contraseña de inicio de sesión o el llavero, desbloquéalo y abre AnonChat de nuevo.',
+      novault: 'Tus datos están protegidos por el llavero del sistema, que ahora no está disponible. Inicia tu sesión de escritorio normalmente y abre AnonChat de nuevo.',
+      damaged: 'El archivo que guarda la clave de tus datos está dañado. No se ha cambiado nada.', startOver: 'Empezar de nuevo…' },
+    fr: { connected: "connecté", publishing: "publication de votre adresse…", slow: "cela prend plus de temps que prévu…", slowHint: "le réseau est peut-être lent ; nouvel essai en cours", startFailed: "impossible de démarrer", portBusy: "Un autre programme utilise le port dont AnonChat a besoin (47822). Fermez-le et relancez AnonChat.", enter: 'Saisissez votre phrase secrète', unlock: 'Déverrouiller', unlocking: 'Déverrouillage…', enterNote: 'La connexion au réseau Anyone commence après le déverrouillage.',
+      choose: 'Choisissez une phrase secrète', chooseNote: 'Ce système n’a pas de trousseau pour conserver votre clé de chiffrement : AnonChat protège donc vos données avec une phrase secrète.',
+      again: 'Saisissez-la à nouveau', cont: 'Continuer', show: 'Afficher', hide: 'Masquer', quit: 'Quitter', forgot: 'Oubliée ?',
+      wrong: 'Phrase secrète incorrecte', empty: 'Saisissez votre phrase secrète', short: 'Au moins {n} caractères', mismatch: 'Les deux ne correspondent pas',
+      forgotTitle: 'Phrase secrète oubliée ?', forgotNote: 'Personne ne peut la récupérer. Vous pouvez tout effacer sur cet ordinateur et recommencer avec une nouvelle identité. Vos contacts auront besoin de votre nouvelle adresse.',
+      word: 'EFFACER', typeWord: 'Pour confirmer, tapez : {w}', erase: 'Effacer et quitter', back: 'Retour',
+      errTitle: 'Impossible de déverrouiller vos données', vault: 'Le trousseau du système n’a pas rendu la clé d’AnonChat. Si vous avez changé récemment votre mot de passe de session ou votre trousseau, déverrouillez-le et rouvrez AnonChat.',
+      novault: 'Vos données sont protégées par le trousseau du système, indisponible pour le moment. Ouvrez votre session normalement et rouvrez AnonChat.',
+      damaged: 'Le fichier qui contient la clé de vos données est endommagé. Rien n’a été modifié.', startOver: 'Recommencer…' },
+    it: { connected: "connesso", publishing: "pubblicazione del tuo indirizzo…", slow: "ci vuole più del previsto…", slowHint: "la rete potrebbe essere lenta: nuovo tentativo in corso", startFailed: "impossibile avviare", portBusy: "Un altro programma sta usando la porta che serve ad AnonChat (47822). Chiudilo e riavvia AnonChat.", enter: 'Inserisci la passphrase', unlock: 'Sblocca', unlocking: 'Sblocco…', enterNote: 'La connessione alla rete Anyone inizia dopo lo sblocco.',
+      choose: 'Scegli una passphrase', chooseNote: 'Questo sistema non ha un portachiavi per conservare la chiave di cifratura, quindi AnonChat protegge i tuoi dati con una passphrase.',
+      again: 'Scrivila di nuovo', cont: 'Continua', show: 'Mostra', hide: 'Nascondi', quit: 'Esci', forgot: 'Dimenticata?',
+      wrong: 'Passphrase errata', empty: 'Scrivi la passphrase', short: 'Almeno {n} caratteri', mismatch: 'Non coincidono',
+      forgotTitle: 'Hai dimenticato la passphrase?', forgotNote: 'Nessuno può recuperarla. Puoi cancellare tutto su questo computer e ricominciare con una nuova identità. I tuoi contatti avranno bisogno del nuovo indirizzo.',
+      word: 'CANCELLA', typeWord: 'Per confermare, scrivi: {w}', erase: 'Cancella ed esci', back: 'Indietro',
+      errTitle: 'Impossibile sbloccare i dati', vault: 'Il portachiavi di sistema non ha restituito la chiave di AnonChat. Se hai cambiato di recente la password di accesso o il portachiavi, sbloccalo e riapri AnonChat.',
+      novault: 'I tuoi dati sono protetti dal portachiavi di sistema, ora non disponibile. Accedi normalmente alla sessione e riapri AnonChat.',
+      damaged: 'Il file che contiene la chiave dei tuoi dati è danneggiato. Non è stato cambiato nulla.', startOver: 'Ricomincia…' },
+    de: { connected: "verbunden", publishing: "Adresse wird veröffentlicht…", slow: "dauert länger als erwartet…", slowHint: "das Netzwerk ist eventuell langsam – neuer Versuch läuft", startFailed: "konnte nicht starten", portBusy: "Ein anderes Programm belegt den Port, den AnonChat braucht (47822). Schließe es und starte AnonChat neu.", enter: 'Passphrase eingeben', unlock: 'Entsperren', unlocking: 'Wird entsperrt…', enterNote: 'Die Verbindung zum Anyone-Netzwerk beginnt nach dem Entsperren.',
+      choose: 'Passphrase wählen', chooseNote: 'Dieses System hat keinen Schlüsselbund für deinen Verschlüsselungsschlüssel, daher schützt AnonChat deine Daten mit einer Passphrase.',
+      again: 'Noch einmal eingeben', cont: 'Weiter', show: 'Zeigen', hide: 'Verbergen', quit: 'Beenden', forgot: 'Vergessen?',
+      wrong: 'Falsche Passphrase', empty: 'Passphrase eingeben', short: 'Mindestens {n} Zeichen', mismatch: 'Die beiden stimmen nicht überein',
+      forgotTitle: 'Passphrase vergessen?', forgotNote: 'Niemand kann sie wiederherstellen. Du kannst alles auf diesem Computer löschen und mit einer neuen Identität neu beginnen. Deine Kontakte brauchen dann deine neue Adresse.',
+      word: 'LÖSCHEN', typeWord: 'Zum Bestätigen eingeben: {w}', erase: 'Löschen und beenden', back: 'Zurück',
+      errTitle: 'Daten konnten nicht entsperrt werden', vault: 'Der System-Schlüsselbund hat den Schlüssel von AnonChat nicht herausgegeben. Wenn du kürzlich dein Anmeldepasswort oder den Schlüsselbund geändert hast, entsperre ihn und öffne AnonChat erneut.',
+      novault: 'Deine Daten sind durch den System-Schlüsselbund geschützt, der gerade nicht verfügbar ist. Melde dich normal an und öffne AnonChat erneut.',
+      damaged: 'Die Datei mit dem Schlüssel zu deinen Daten ist beschädigt. Es wurde nichts geändert.', startOver: 'Neu beginnen…' },
+    pt: { connected: "ligado", publishing: "a publicar o seu endereço…", slow: "está a demorar mais do que o previsto…", slowHint: "a rede pode estar lenta; a tentar novamente", startFailed: "não foi possível iniciar", portBusy: "Outro programa está a usar a porta de que o AnonChat precisa (47822). Feche‑o e volte a abrir o AnonChat.", enter: 'Introduza a sua palavra-passe', unlock: 'Desbloquear', unlocking: 'A desbloquear…', enterNote: 'A ligação à rede Anyone começa depois de desbloquear.',
+      choose: 'Escolha uma palavra-passe', chooseNote: 'Este sistema não tem um porta-chaves para guardar a sua chave de encriptação, por isso o AnonChat protege os seus dados com uma palavra-passe.',
+      again: 'Introduza-a novamente', cont: 'Continuar', show: 'Mostrar', hide: 'Ocultar', quit: 'Sair', forgot: 'Esqueceu-se?',
+      wrong: 'Palavra-passe incorreta', empty: 'Introduza a sua palavra-passe', short: 'Pelo menos {n} caracteres', mismatch: 'As duas não coincidem',
+      forgotTitle: 'Esqueceu-se da palavra-passe?', forgotNote: 'Ninguém a pode recuperar. Pode apagar tudo neste computador e recomeçar com uma nova identidade. Os seus contactos vão precisar do novo endereço.',
+      word: 'APAGAR', typeWord: 'Para confirmar, escreva: {w}', erase: 'Apagar e sair', back: 'Voltar',
+      errTitle: 'Não foi possível desbloquear os seus dados', vault: 'O porta-chaves do sistema não devolveu a chave do AnonChat. Se mudou recentemente a palavra-passe da sua conta no computador ou o porta-chaves, desbloqueie-o e abra o AnonChat novamente.',
+      novault: 'Os seus dados estão protegidos pelo porta-chaves do sistema, que agora não está disponível. Inicie a sessão normalmente e abra o AnonChat novamente.',
+      damaged: 'O ficheiro com a chave dos seus dados está danificado. Nada foi alterado.', startOver: 'Recomeçar…' },
+    zh: { connected: "已连接", publishing: "正在发布你的地址…", slow: "耗时比预期长…", slowHint: "网络可能较慢，仍在尝试", startFailed: "无法启动", portBusy: "另一个程序正在使用 AnonChat 需要的端口（47822）。请关闭该程序后重新打开 AnonChat。", enter: '输入你的密码短语', unlock: '解锁', unlocking: '正在解锁…', enterNote: '解锁后才会开始连接 Anyone 网络。',
+      choose: '设置密码短语', chooseNote: '此系统没有可保存加密密钥的密钥环，因此 AnonChat 改用密码短语保护你的数据。',
+      again: '再输入一次', cont: '继续', show: '显示', hide: '隐藏', quit: '退出', forgot: '忘记了？',
+      wrong: '密码短语错误', empty: '请输入密码短语', short: '至少 {n} 个字符', mismatch: '两次输入不一致',
+      forgotTitle: '忘记了密码短语？', forgotNote: '任何人都无法找回。你可以清除这台电脑上的所有数据，以新身份重新开始。你的联系人需要你的新地址。',
+      word: '清除', typeWord: '请输入以下内容确认：{w}', erase: '清除并退出', back: '返回',
+      errTitle: '无法解锁你的数据', vault: '系统密钥环没有返回 AnonChat 的密钥。如果你最近更改了登录密码或密钥环，请解锁密钥环后重新打开 AnonChat。',
+      novault: '你的数据由系统密钥环保护，但它目前不可用。请正常登录桌面会话后重新打开 AnonChat。',
+      damaged: '保存数据密钥的文件已损坏。没有做任何更改。', startOver: '重新开始…' },
+    ja: { connected: "接続しました", publishing: "アドレスを公開中…", slow: "予想より時間がかかっています…", slowHint: "ネットワークが遅い可能性があります。再試行中", startFailed: "起動できませんでした", portBusy: "AnonChat が必要とするポート（47822）を別のプログラムが使用しています。そのプログラムを閉じてから AnonChat を起動し直してください。", enter: 'パスフレーズを入力', unlock: 'ロック解除', unlocking: 'ロック解除中…', enterNote: 'Anyone ネットワークへの接続はロック解除後に始まります。',
+      choose: 'パスフレーズを設定', chooseNote: 'このシステムには暗号化キーを保管するキーリングがないため、AnonChat はパスフレーズでデータを保護します。',
+      again: 'もう一度入力', cont: '続ける', show: '表示', hide: '隠す', quit: '終了', forgot: '忘れた場合',
+      wrong: 'パスフレーズが違います', empty: 'パスフレーズを入力してください', short: '{n} 文字以上', mismatch: '2 つが一致しません',
+      forgotTitle: 'パスフレーズを忘れましたか？', forgotNote: '誰にも復元できません。このコンピューターのデータをすべて消去し、新しい ID でやり直すことができます。連絡先には新しいアドレスが必要です。',
+      word: '消去', typeWord: '確認のため次を入力：{w}', erase: '消去して終了', back: '戻る',
+      errTitle: 'データのロックを解除できませんでした', vault: 'システムのキーリングが AnonChat のキーを返しませんでした。最近ログインパスワードやキーリングを変更した場合は、キーリングのロックを解除してから AnonChat を開き直してください。',
+      novault: 'データはシステムのキーリングで保護されていますが、現在利用できません。通常どおりデスクトップにログインしてから AnonChat を開き直してください。',
+      damaged: 'データのキーを保存しているファイルが破損しています。何も変更されていません。', startOver: 'やり直す…' },
+    pl: { connected: "połączono", publishing: "publikowanie adresu…", slow: "trwa to dłużej niż zwykle…", slowHint: "sieć może być wolna — wciąż próbujemy", startFailed: "nie udało się uruchomić", portBusy: "Inny program używa portu potrzebnego AnonChat (47822). Zamknij go i uruchom AnonChat ponownie.", enter: 'Wpisz hasło', unlock: 'Odblokuj', unlocking: 'Odblokowywanie…', enterNote: 'Połączenie z siecią Anyone zaczyna się po odblokowaniu.',
+      choose: 'Wybierz hasło', chooseNote: 'Ten system nie ma pęku kluczy, w którym można przechować klucz szyfrowania, więc AnonChat chroni dane hasłem.',
+      again: 'Wpisz je ponownie', cont: 'Dalej', show: 'Pokaż', hide: 'Ukryj', quit: 'Zamknij', forgot: 'Nie pamiętasz?',
+      wrong: 'Nieprawidłowe hasło', empty: 'Wpisz hasło', short: 'Co najmniej {n} znaków', mismatch: 'Hasła się różnią',
+      forgotTitle: 'Nie pamiętasz hasła?', forgotNote: 'Nikt go nie odzyska. Możesz wymazać wszystko na tym komputerze i zacząć od nowa z nową tożsamością. Twoje kontakty będą potrzebować nowego adresu.',
+      word: 'WYMAŻ', typeWord: 'Aby potwierdzić, wpisz: {w}', erase: 'Wymaż i zamknij', back: 'Wstecz',
+      errTitle: 'Nie udało się odblokować danych', vault: 'Systemowy pęk kluczy nie zwrócił klucza AnonChat. Jeśli niedawno zmieniono hasło logowania lub pęk kluczy, odblokuj go i otwórz AnonChat ponownie.',
+      novault: 'Dane są chronione systemowym pękiem kluczy, który jest teraz niedostępny. Zaloguj się normalnie i otwórz AnonChat ponownie.',
+      damaged: 'Plik z kluczem do danych jest uszkodzony. Niczego nie zmieniono.', startOver: 'Zacznij od nowa…' },
+    hi: { connected: "कनेक्ट हो गया", publishing: "आपका पता प्रकाशित हो रहा है…", slow: "उम्मीद से ज़्यादा समय लग रहा है…", slowHint: "नेटवर्क धीमा हो सकता है — कोशिश जारी है", startFailed: "शुरू नहीं हो सका", portBusy: "कोई दूसरा प्रोग्राम वह पोर्ट (47822) इस्तेमाल कर रहा है जिसकी AnonChat को ज़रूरत है। उसे बंद करें और AnonChat फिर से शुरू करें।", enter: 'अपना पासफ़्रेज़ दर्ज करें', unlock: 'अनलॉक करें', unlocking: 'अनलॉक हो रहा है…', enterNote: 'अनलॉक करने के बाद Anyone नेटवर्क से जुड़ना शुरू होता है।',
+      choose: 'पासफ़्रेज़ चुनें', chooseNote: 'इस सिस्टम में एन्क्रिप्शन कुंजी रखने के लिए कीरिंग नहीं है, इसलिए AnonChat आपके डेटा को पासफ़्रेज़ से सुरक्षित रखता है।',
+      again: 'फिर से टाइप करें', cont: 'जारी रखें', show: 'दिखाएँ', hide: 'छिपाएँ', quit: 'बंद करें', forgot: 'भूल गए?',
+      wrong: 'गलत पासफ़्रेज़', empty: 'अपना पासफ़्रेज़ टाइप करें', short: 'कम से कम {n} अक्षर', mismatch: 'दोनों मेल नहीं खाते',
+      forgotTitle: 'पासफ़्रेज़ भूल गए?', forgotNote: 'इसे कोई वापस नहीं ला सकता। आप इस कंप्यूटर पर सब कुछ मिटाकर नई पहचान के साथ फिर से शुरू कर सकते हैं। आपके संपर्कों को आपका नया पता चाहिए होगा।',
+      word: 'मिटाएँ', typeWord: 'पुष्टि के लिए टाइप करें: {w}', erase: 'मिटाएँ और बंद करें', back: 'वापस',
+      errTitle: 'आपका डेटा अनलॉक नहीं हो सका', vault: 'सिस्टम कीरिंग ने AnonChat की कुंजी नहीं लौटाई। अगर आपने हाल ही में लॉगिन पासवर्ड या कीरिंग बदली है, तो कीरिंग अनलॉक करके AnonChat फिर से खोलें।',
+      novault: 'आपका डेटा सिस्टम कीरिंग से सुरक्षित है, जो अभी उपलब्ध नहीं है। सामान्य तरीके से लॉग इन करके AnonChat फिर से खोलें।',
+      damaged: 'आपके डेटा की कुंजी वाली फ़ाइल खराब हो गई है। कुछ भी नहीं बदला गया।', startOver: 'फिर से शुरू करें…' },
+  };
+  // The language chosen in the app (passed by the desktop app), or the system's before it has been chosen.
+  const LANG = ((new URLSearchParams(location.search).get('lang') || navigator.language || 'en').slice(0, 2).toLowerCase());
+  const S = T[LANG] || T.en;
+  const tr = (k, v = {}) => (S[k] || T.en[k]).replace(/\{(\w+)\}/g, (_, x) => v[x] ?? '');
+  const keyEl = document.getElementById('key');
+  const mk = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+  function field(id, label) {
+    const input = mk('input', { type: 'password', id, placeholder: label, spellcheck: false });
+    input.setAttribute('aria-label', label);
+    const show = mk('button', { type: 'button', className: 'show', textContent: tr('show') });
+    show.onclick = () => { const on = input.type === 'password'; input.type = on ? 'text' : 'password'; show.textContent = tr(on ? 'hide' : 'show'); input.focus(); };
+    return [mk('div', { className: 'fld' }, input, show), input];
+  }
+  function eraseStep(back, title) {
+    keyEl.replaceChildren();
+    const word = tr('word');
+    const input = mk('input', { type: 'text', spellcheck: false });
+    input.setAttribute('aria-label', tr('typeWord', { w: word }));
+    const go = mk('button', { type: 'button', className: 'danger', textContent: tr('erase'), disabled: true });
+    input.oninput = () => { go.disabled = input.value.trim().toLocaleUpperCase() !== word.toLocaleUpperCase(); };
+    go.onclick = () => { go.disabled = true; window.splash.submit({ action: 'erase' }); };
+    const b = mk('button', { type: 'button', textContent: tr('back') }); b.onclick = back;
+    keyEl.append(mk('h1', { textContent: title || tr('forgotTitle') }), mk('p', { textContent: tr('forgotNote') }),
+      mk('p', { textContent: tr('typeWord', { w: word }) }), input, go, mk('div', { className: 'links' }, b));
+    setTimeout(() => input.focus(), 30);
+  }
+  let lastStep = null;
+  function render(step) {
+    lastStep = step;
+    document.body.classList.add('keymode');
+    keyEl.replaceChildren();
+    const quit = mk('button', { type: 'button', textContent: tr('quit') }); quit.onclick = () => window.splash.submit({ action: 'quit' });
+    const err = mk('div', { className: 'err', role: 'alert', textContent: step.error ? tr(step.error, { n: step.min || 12 }) : '' });
+    if (step.mode === 'error') {
+      const over = mk('button', { type: 'button', textContent: tr('startOver') }); over.onclick = () => eraseStep(() => render(lastStep), tr('startOver').replace('…', '?'));
+      keyEl.append(mk('h1', { textContent: tr('errTitle') }), mk('p', { textContent: tr(step.reason) }), mk('div', { className: 'links' }, quit, over));
+      return;
+    }
+    if (step.mode === 'enter') {
+      const [box, input] = field('pass', tr('enter'));
+      const go = mk('button', { type: 'submit', className: 'go', textContent: tr('unlock') });
+      const forgot = mk('button', { type: 'button', textContent: tr('forgot') }); forgot.onclick = () => eraseStep(() => render(lastStep));
+      keyEl.onsubmit = (e) => { e.preventDefault(); go.disabled = true; window.splash.submit({ pass: input.value }); input.value = ''; };
+      keyEl.append(mk('h1', { textContent: tr('enter') }), box, go, err, mk('p', { textContent: tr('enterNote') }), mk('div', { className: 'links' }, quit, forgot));
+      setTimeout(() => input.focus(), 30);
+      return;
+    }
+    const [box1, in1] = field('pass', tr('choose'));
+    const [box2, in2] = field('pass2', tr('again'));
+    const go = mk('button', { type: 'submit', className: 'go', textContent: tr('cont') });
+    keyEl.onsubmit = (e) => { e.preventDefault(); go.disabled = true; window.splash.submit({ pass: in1.value, confirm: in2.value }); };
+    keyEl.append(mk('h1', { textContent: tr('choose') }), mk('p', { textContent: tr('chooseNote') }), box1, box2, go, err, mk('div', { className: 'links' }, quit));
+    setTimeout(() => in1.focus(), 30);
+  }
+  on('key-prompt', render);
+  on('key-busy', () => { const g = keyEl.querySelector('.go'); if (g) { g.disabled = true; g.textContent = tr('unlocking'); } });
+  on('key-done', () => { document.body.classList.remove('keymode'); keyEl.replaceChildren(); });
+
+  on('backend-error', (msg) => {
+    statusEl.textContent = S.startFailed;
+    // exit 5: the port the address uses is held by another program (server.js listenPublic).
+    hintEl.classList.toggle('long', msg === 'exit 5');
+    hintEl.textContent = msg === 'exit 5' ? S.portBusy : String(msg || '').slice(0, 60);
+  });
+</script>
+</body>
+</html>
