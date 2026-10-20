@@ -108,7 +108,7 @@ Press the phone button in a conversation header. The other side gets a ringing c
 - **Audio** is Opus (WebCodecs, 24 kbit/s constant bit rate) in 40 ms frames, each sealed with AES-256-GCM using a counter nonce (replayed, altered or forged frames are dropped). Frames have a fixed size and are sent at a constant rate even while you are muted, so the stream does not reveal when you speak.
 - **Transport** is one WebSocket per call: your browser → your local backend → the loopback SOCKS proxy → the other node's hidden service. The backend only forwards ciphertext. If a circuit breaks, the caller redials the same path and the call carries on. Live audio is never queued: when a link is congested, frames are dropped rather than delayed.
 - **No clearnet, ever**: voice uses no WebRTC, STUN, TURN or UDP. The WebRTC API is removed from the page before any other script runs, the desktop shell forces `disable_non_proxied_udp`, the Content-Security-Policy only allows the local backend, and the backend can only open the call link through the SOCKS proxy (`socks5h`, so the `.anyone` name is resolved inside the network). `npm test` checks all of this (check 14).
-- **What to expect**: a call crosses six relays plus the rendezvous point, so expect about 2 to 3 seconds from mouth to ear, like a satellite call: about a second of network, plus a cushion that rides out the route's pauses instead of cutting out. The call card shows the live delay. The other side's voice is played through an ordinary audio player in the page, which the system's echo cancellation knows about; headphones still give the cleanest sound.
+- **What to expect**: a call crosses five relays plus the rendezvous point, so expect about 2 to 3 seconds from mouth to ear, like a satellite call: about a second of network, plus a cushion that rides out the route's pauses instead of cutting out. The call card shows the live delay. The other side's voice is played through an ordinary audio player in the page, which the system's echo cancellation knows about; headphones still give the cleanest sound.
 
 ### No metadata leaks
 
@@ -208,7 +208,7 @@ AnonChat layers three independent protections:
 
 - [x] Visualization of the latest used circuits via an interactive world map of relays
 
-- [x] Linux packages: `.deb` (Ubuntu/Debian), `.pacman` (Arch), `.rpm` (Fedora/openSUSE; build set up, not yet tested on those systems)
+- [x] Linux packages: `.deb` (Ubuntu/Debian), `.pacman` (Arch), `.rpm` (Fedora/openSUSE)
 
 - [ ] macOS build (build setup ready; not yet tested on a Mac)
 

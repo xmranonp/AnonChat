@@ -181,7 +181,7 @@ service and is encrypted again with keys that exist only for that call. There is
 WebRTC, no STUN/TURN server and no UDP, so nothing can reveal your real IP address.
 
 **Why is there a delay?**
-Every call crosses the onion network in both directions (about six relays plus the
+Every call crosses the onion network in both directions (five relays plus the
 rendezvous point). Expect about 2 to 3 seconds from mouth to ear: about a second of
 network, plus a cushion of audio that rides out the route's pauses instead of cutting
 out. Take turns speaking. The call card shows the current delay.

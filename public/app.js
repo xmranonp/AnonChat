@@ -6971,7 +6971,7 @@ function openSettingsDialog(focus) {
   }
 }
 
-const ABOUT_PROJECT_URL = 'https://github.com/xmranonp';
+const ABOUT_PROJECT_URL = 'https://github.com/xmranonp/AnonChat';
 const ABOUT_XMR_ADDRESS = '86AJBT6p4Xf6dCEXRqoduk5YPMdvGzbazB2rz8eXzypoDraS5Cgjq5qARCop7WVgsPBxZ4CpSgpHqiZPBaaSiPhb1SGKe35';
 
 // The project link is shown as text with a Copy button: opening it would connect from the system browser, outside the Anyone network.
