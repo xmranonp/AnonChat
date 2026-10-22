@@ -1,6 +1,6 @@
 {
   "name": "anyone-chat",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "repository": { "type": "git", "url": "git+https://github.com/xmranonp/AnonChat.git" },
   "description": "End-to-end encrypted messenger over Anyone Protocol hidden services. Your .anyone address is your identity.",
   "main": "server.js",

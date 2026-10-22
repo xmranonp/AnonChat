@@ -223,6 +223,11 @@ That means the recipient isn't currently reachable — the message is safely que
 in the outbox and will send automatically once they're back (see above). You don't
 need to resend. In a group, ⏳ shows while your message is handed to every member;
 anyone who can't be reached gets it as soon as they can.
+To see why it is waiting, open the network panel (antenna button) → **Status**: lines
+marked `[AnonChat]` say what happened on the last tries to that address (shortened), for
+example "address not found on the network (descriptor not found)" or "found its address,
+but could not reach it (introduction failed)", and "delivered after N tries" once it gets
+through. They are kept in memory only, and are gone when the app closes.
 
 **Someone left a group but is still listed.**
 Each member's app removes them when their notice arrives, and the admin's app then sends
@@ -239,6 +244,16 @@ to you. A route that stopped working is also replaced by itself after a failed t
 If messages to one contact still wait while that contact can write to you, use
 **Rebuild network path** in the chat's ⋮ menu: it closes the old route, clears the
 stale lookups and sends what is waiting.
+
+**I can receive from a contact, but my messages to them always wait.**
+Their app can reach yours, but your app can't reach theirs: their address isn't reachable
+on the network right now, while they can still send. Look at the **Status** lines
+`[AnonChat]` for the reason, and ask them to look at the **Service** line of their own
+Status tab: "Reachable • intro points: 3" is normal; "Published, no introduction points"
+means nobody can reach them at the moment. The usual causes are a computer (or virtual
+machine) that slept or was paused overnight, its clock being wrong, or the same address
+running on two computers at once. Restarting AnonChat on *their* side, with the clock
+right, publishes their address afresh.
 
 **I got a "safety number changed" / key-change warning.**
 This means the contact's identity key no longer matches what you pinned. It can be

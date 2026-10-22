@@ -5535,7 +5535,7 @@ function initLogPanel() {
       };
       const [dot, label] = detailMap[h.detail] || detailMap.unknown;
       let extra = '';
-      if (h.published && h.introPoints != null) {
+      if (h.detail === 'reachable' && h.introPoints != null) {
         extra = '  •  ' + (t('hs.introPoints')) + ': ' + h.introPoints;
       }
       hsHealth.innerHTML = '';
@@ -5559,7 +5559,8 @@ function initLogPanel() {
     for (const line of lines) {
       const span = el('span');
       span.textContent = line + '\n';
-      if (/Bootstrapped/i.test(line))              span.className = 'lb-boot';
+      if (/\[AnonChat\]/.test(line))                span.className = /delivered after/.test(line) ? 'lb-boot' : 'lb-warn';   // why messages wait (lib/deliverylog.js)
+      else if (/Bootstrapped/i.test(line))         span.className = 'lb-boot';
       else if (/\[warn\]/i.test(line))             span.className = 'lb-warn';
       else if (/\[err\]|error/i.test(line))        span.className = 'lb-err';
       else if (/\[notice\]/i.test(line))           span.className = 'lb-notice';

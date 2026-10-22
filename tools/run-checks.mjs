@@ -272,5 +272,12 @@ try {
   (m && m[2] === '0') ? pass(`audit fixes ${m[1]}/${m[1]}`) : fail('audit fixes: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('audit fixes — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.stderr?.toString().match(/^\w*Error\b.*$/m)?.[0] || e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n30. Why messages wait, in the Status log; introduction points counted from the open circuits (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/deliverylog-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`delivery log ${m[1]}/${m[1]}`) : fail('delivery log: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('delivery log — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.stderr?.toString().match(/^\w*Error\b.*$/m)?.[0] || e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

@@ -84,7 +84,7 @@ Most messengers route your conversations through corporate servers that can see 
 - **Exit country** (Circuits tab): choose which country SOCKS5 traffic leaves the network from, with flags and the number of exit relays per country. Default is *Global* (automatic). Only traffic that leaves the network is affected; messages to `.anyone` contacts never use exit relays. Apps are routed only if they (or your system) are set to use the SOCKS5 proxy shown in the tab.
 - **Dynamic port** toggle: if the SOCKS port (9050) is busy, the next free port is used automatically. The current address is shown in the Circuits tab.
 
-- Hidden-service health and bootstrap status.
+- Hidden-service health (with the number of introduction points) and bootstrap status. When messages to someone wait, the Status log says why (address not found, introduction failed, busy…), with the address shortened, and when they got through. Kept in memory only.
 
 - Manual circuit rotation.
 

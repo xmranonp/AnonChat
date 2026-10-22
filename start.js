@@ -59,12 +59,13 @@ AgreeToTerms 1
 ORPort 0
 ControlPort ${ports.ctrl}
 CookieAuthentication 1
-SocksPort 127.0.0.1:${ports.socks}
+SocksPort 127.0.0.1:${ports.socks} ExtendedErrors
 SocksPolicy accept 127.0.0.1
 SocksPolicy reject *
 DataDirectory ${anonDirForRc}
 HiddenServiceDir ${serviceDir}
 HiddenServicePort 80 127.0.0.1:${PUBLIC_PORT}
+# ExtendedErrors: when an address can't be reached, the network says why (not found, introduction failed…); the Status log shows it.
 # Traffic-analysis protection: dummy traffic on the link to the first relay always (the default pads only when the relay
 # supports it); route padding and relays from distinct networks on each route, both defaults, stated so they stay on.
 ConnectionPadding 1

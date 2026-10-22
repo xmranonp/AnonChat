@@ -1,10 +1,10 @@
-// Fake anon control port for UI tests. Control: HTTP on CONTROL_HTTP_PORT: POST /state {circuits, streams}, POST /emit {line},
+// Fake anon control port for UI tests. Control: HTTP on CONTROL_HTTP_PORT: POST /state {circuits, streams, published}, POST /emit {line},
 // POST /delays {list:[ms,...]} (next circuit-status answers), POST /fail {n} (next n circuit-status queries fail), GET /log,
 // POST /bootstrap {pct, silent} (the progress reported; silent: bootstrap queries get no answer).
 import net from 'node:net'; import http from 'node:http'; import fs from 'node:fs';
 const [ctlPort, httpPort, dir] = process.argv.slice(2).map((x, i) => i < 2 ? Number(x) : x);
 fs.writeFileSync(dir + '/control_auth_cookie', Buffer.alloc(32, 7));
-let circuits = [], streams = [], delays = [], fails = 0, bootPct = 100, bootSilent = false; const watchers = new Set(); const log = [];
+let circuits = [], streams = [], published = false, delays = [], fails = 0, bootPct = 100, bootSilent = false; const watchers = new Set(); const log = [];
 const block = (name, lines) => lines.length ? `250+${name}=\r\n` + lines.join('\r\n') + '\r\n.\r\n250 OK\r\n' : `250-${name}=\r\n250 OK\r\n`;
 net.createServer((sock) => {
   let buf = '';
@@ -20,6 +20,7 @@ net.createServer((sock) => {
         if (wait) await new Promise((r) => setTimeout(r, wait));
         sock.write(block('circuit-status', snap));
       }
+      else if (cmd.startsWith('GETINFO hs/service/desc/id/')) sock.write(published ? block(cmd.slice(8), ['hs-descriptor 3', 'superencrypted', '-----BEGIN MESSAGE-----', 'AAAA', '-----END MESSAGE-----']) : '552 Unrecognized key\r\n');
       else if (cmd === 'GETINFO stream-status') sock.write(block('stream-status', streams));
       else if (cmd.startsWith('GETINFO ns/id/')) { const fp = cmd.slice(14); sock.write(`250+ns/id/${fp}=\r\nr relay${fp.slice(0, 4)} AAAA BBBB 2026-01-01 00:00:00 10.0.0.${fp.charCodeAt(0) % 200} 9001 0\r\ns Fast Running Stable\r\nw Bandwidth=2048\r\n.\r\n250 OK\r\n`); }
       else if (cmd.startsWith('GETINFO traffic/read')) sock.write('250-traffic/read=1000\r\n250 OK\r\n');
@@ -36,7 +37,7 @@ net.createServer((sock) => {
 http.createServer((req, res) => {
   let b = ''; req.on('data', (c) => b += c); req.on('end', () => {
     const j = b ? JSON.parse(b) : {};
-    if (req.url === '/state') { if (j.circuits) circuits = j.circuits; if (j.streams) streams = j.streams; }
+    if (req.url === '/state') { if (j.circuits) circuits = j.circuits; if (j.streams) streams = j.streams; if ('published' in j) published = !!j.published; }
     if (req.url === '/emit') for (const w of watchers) w.write(j.line + '\r\n');
     if (req.url === '/delays') delays = j.list || [];
     if (req.url === '/fail') fails = j.n || 0;

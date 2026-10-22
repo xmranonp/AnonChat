@@ -17,6 +17,7 @@ const http = require('http');
 const rl    = require('./lib/ratelimit');
 const pow   = require('./lib/pow');
 const stamp = require('./lib/stamp');
+const deliverylog = require('./lib/deliverylog');   // also names the network's own SOCKS reply codes (see the file)
 const netlock = require('./lib/netlock');
 const peerdata = require('./lib/peerdata');
 const { createCallBridge } = require('./lib/callbridge');
@@ -820,6 +821,7 @@ ui.get('/api/logs', async (_req, res) => {
     const raw = fs.readFileSync(ANON_LOG, 'utf8');
     lines = raw.split('\n').filter(l => l.trim()).slice(-200);
   } catch {}
+  const netLines = lines;
 
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = lines[i].match(/Bootstrapped (\d+)%/);
@@ -833,7 +835,7 @@ ui.get('/api/logs', async (_req, res) => {
     address:   myAddress() || null,
     uptime:    Math.floor(process.uptime()),
     bootstrap: fromCtrl ?? _maxBootstrap,
-    lines,
+    lines: deliverylog.merge(netLines, deliveryLog.lines().map((x) => x.text)),
   });
 });
 
@@ -1006,6 +1008,7 @@ ui.post('/api/messages/ack', (req, res) => {
 });
 
 const outbox = require('./lib/outbox');
+const deliveryLog = deliverylog.create();
 
 // Force a fresh descriptor fetch for a peer: it busts a stale cache that still points at the peer's old introduction points after a restart.
 const _lastHsFetch = new Map();
@@ -1091,6 +1094,9 @@ function initOutbox() {
     const msg = { type: 'outbox:delivered', id: item.id, msgId: item.msgId || null, toAddress: item.toAddress, queuedAt: item.queuedAt };
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
   });
+  // Why messages to someone are waiting, in the Status log (lib/deliverylog.js).
+  outbox.on('tryFailed', ({ toAddress, error }) => deliveryLog.failed(toAddress, error));
+  outbox.on('delivered', (item) => deliveryLog.delivered(item.toAddress));
   outbox.on('expired', (item) => {
     const msg = { type: 'outbox:expired', id: item.id, msgId: item.msgId || null, toAddress: item.toAddress };
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
@@ -1129,7 +1135,7 @@ ui.post('/api/send', async (req, res) => {
   }
 
   // Call signalling is time-critical and worthless later: two attempts at most, never queued.
-  const TRANSIENT = /HostUnreachable|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up|Proxy connection timed out|proxy.*timed out|timed out|timeout|ESOCKETTIMEDOUT|Network Error|connect ENETUNREACH/i;
+  const TRANSIENT = /HostUnreachable|Hs[A-Z]\w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up|Proxy connection timed out|proxy.*timed out|timed out|timeout|ESOCKETTIMEDOUT|Network Error|connect ENETUNREACH/i;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       await onion().post(`http://${addr}/api/inbox`, payload);
