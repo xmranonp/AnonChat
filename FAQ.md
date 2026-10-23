@@ -249,7 +249,8 @@ stale lookups and sends what is waiting.
 Their app can reach yours, but your app can't reach theirs: their address isn't reachable
 on the network right now, while they can still send. Look at the **Status** lines
 `[AnonChat]` for the reason, and ask them to look at the **Service** line of their own
-Status tab: "Reachable • intro points: 3" is normal; "Published, no introduction points"
+Status tab: "Reachable • intro points: 6" is normal (3 for each of the two descriptors the
+network keeps for an address, today's and the next period's); "Published, no introduction points"
 means nobody can reach them at the moment. The usual causes are a computer (or virtual
 machine) that slept or was paused overnight, its clock being wrong, or the same address
 running on two computers at once. Restarting AnonChat on *their* side, with the clock
