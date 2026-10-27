@@ -11,3 +11,4 @@
 # Format: <sha256 of the anon binary>  <platform>  <anon version>
 
 0e8304df465cc89012b4b1dd49dbab39428425454fe2a69abcd780dbc57cfc2c  linux-x64  anon v0.4.10.4-beta
+b528bd496713996b277a4b903a6c4fba14abb486f2f0827459cab6cce79be866  win-x64  anon v0.4.10.4.beta
