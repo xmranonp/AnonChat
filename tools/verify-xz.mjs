@@ -24,7 +24,8 @@ for (const kind of ['random', 'zeros', 'repeat', 'mixed'])
     for (const preset of ['-0', '-6', '-9e']) {
       const data = make(kind, n);
       writeFileSync(bin, data);
-      execFileSync('xz', ['-zkf', preset, bin]);
+      // -T1: one block. lib/xz.js reads single-block files only; xz 5.8+ defaults to several threads, which writes several blocks.
+      execFileSync('xz', ['-zkf', '-T1', preset, bin]);
       try {
         const out = Buffer.from(decompressXz(readFileSync(bin + '.xz')));
         if (Buffer.compare(out, data) === 0) pass++;
