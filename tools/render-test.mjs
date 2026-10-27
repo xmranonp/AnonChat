@@ -74,5 +74,57 @@ ok('applyReaction ignores an emoji that isn’t a string', !env.store.get('t')[0
   ok('…but never moved above something we wrote since', wot('x', late) === 30);
 }
 
+// A corpus of hostile messages: whatever the text, the result may contain only our own few tags with their own attributes, every
+// "<" or ">" outside a tag must be escaped, every link must be http(s), and a quote can never end an attribute early.
+{
+  const CORPUS = [
+    '<script>alert(1)</script>', '<img src=x onerror=alert(1)>', 'http://x.com" onmouseover="alert(1)', "http://x.com' onmouseover='alert(1)",
+    'javascript:alert(1)', 'http://x.com/?a=1&b=2', '`<img src=x onerror=alert(1)>`', '**<svg onload=alert(1)>**', '[a](javascript:alert(1))',
+    'http://x.com/<img src=x onerror=alert(1)>', 'a'.repeat(56) + '.anyone" onclick="alert(1)', 'http://x.com&quot;onmouseover=alert(1)',
+    'http://x.com&#39;onmouseover=alert(1)', 'http://x.com&amp;" onx="', '<a href="javascript:alert(1)">x</a>',
+    'data:text/html,<script>alert(1)</script>', 'http://evil\u3000.com', '*a* <iframe src=javascript:alert(1)>',
+    'http://x.com\u0000" onerror="alert(1)', 'http://x.com#<svg/onload=alert(1)>', '&lt;script&gt;alert(1)&lt;/script&gt;', '&amp;lt;script&amp;gt;',
+    'http://x.com/a>b" onload="alert(1)', '\u{1F600}<img src=x onerror=alert(1)>',
+    // more: markup inside markup, line breaks inside links, odd schemes and letter case, tags split across formatting
+    '`**<b onmouseover=alert(1)>**`', '**`<script>`**', '*<img src=x onerror=alert(1)>*', '_<svg/onload=alert(1)>_',
+    'http://x.com/\n" onmouseover="alert(1)', 'http://x.com/\r\n<script>alert(1)</script>', 'HTTP://X.COM" onmouseover="alert(1)',
+    'JaVaScRiPt:alert(1)', 'java\tscript:alert(1)', 'vbscript:msgbox(1)', 'http://x.com/%22%20onmouseover=%22alert(1)',
+    'http://x.com/?q="><script>alert(1)</script>', 'http://x.com/?q=\'><img src=x onerror=alert(1)>', 'http://[::1]/"onmouseover="alert(1)',
+    '<<script>script>alert(1)<</script>/script>', '<scr<script>ipt>alert(1)</scr</script>ipt>', '<svg><script>alert(1)</script></svg>',
+    '<math><mtext><table><mglyph><style><img src=x onerror=alert(1)>', '<details open ontoggle=alert(1)>', '<body onload=alert(1)>',
+    '<a href=javascript&colon;alert(1)>x</a>', '<a href="&#106;avascript:alert(1)">x</a>', '<a href="&#x6A;avascript:alert(1)">x</a>',
+    '"><script>alert(1)</script>', "'><script>alert(1)</script>", '</a><script>alert(1)</script>', '</code><img src=x onerror=alert(1)>',
+    '`' + 'a'.repeat(5000) + '`', '*'.repeat(3000), '_'.repeat(3000), 'http://' + 'a'.repeat(5000), ('**a** ').repeat(1000),
+    '\u202Ehttp://x.com/\u202D" onmouseover="alert(1)', 'http://x.com/\u2028<script>alert(1)</script>', '\ud800<script>alert(1)</script>',
+    'b'.repeat(56) + '.anyone/<script>', 'http://' + 'b'.repeat(56) + '.anyone/"onmouseover="alert(1)', '$&$`$\'<script>alert(1)</script>',
+    '\\<script>alert(1)</script>', '<!--<script>alert(1)</script>-->', '<![CDATA[<script>alert(1)</script>]]>', '<?php echo 1; ?>',
+  ];
+  const TAG = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)((?:\s+[a-zA-Z-]+="[^"<>]*")*)\s*>/g;
+  const ALLOWED = new Set(['a', 'br', 'code', 'em', 'strong']);
+  const ATTRS = { a: ['href', 'target', 'rel', 'class'], code: ['class'] };
+  const problems = (html) => {
+    const out = [];
+    const rest = html.replace(TAG, (m, close, name, attrs) => {
+      const n = name.toLowerCase();
+      if (!ALLOWED.has(n)) out.push('tag <' + n + '>');
+      for (const [, k, v] of attrs.matchAll(/([a-zA-Z-]+)="([^"]*)"/g)) {
+        if (!(ATTRS[n] || []).includes(k.toLowerCase())) out.push('attribute ' + k + ' on <' + n + '>');
+        if (k.toLowerCase() === 'href' && !/^https?:\/\/[^\s"'<>]*$/i.test(v.replace(/&amp;/g, '&'))) out.push('href ' + v.slice(0, 40));
+      }
+      return '';
+    });
+    if (/[<>]/.test(rest)) out.push('unescaped < or > in text: ' + rest.match(/.{0,20}[<>].{0,20}/)[0]);
+    return out;
+  };
+  let bad = [];
+  for (const p of CORPUS) { let h; try { h = render(p); } catch (e) { bad.push([p, 'threw ' + e.message]); continue; } const pr = problems(h); if (pr.length) bad.push([p.slice(0, 40), pr.join('; ')]); }
+  ok(`${CORPUS.length} hostile messages: only our own tags and attributes, text escaped, links http(s)`, bad.length === 0, JSON.stringify(bad.slice(0, 3)));
+  // Rendering a message must stay quick whatever it contains.
+  const t = Date.now(); for (const p of CORPUS) render(p); ok('…and rendering them all is quick', Date.now() - t < 2000, (Date.now() - t) + ' ms');
+  // The checker itself must catch what it is there for.
+  ok('(the checker catches a planted <script>, an onclick and a javascript: link)',
+    problems('<script>x</script>').length >= 1 && problems('<a href="http://x" onclick="y">z</a>').length === 1 && problems('<a href="javascript:x">z</a>').length === 1);
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

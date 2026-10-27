@@ -139,6 +139,16 @@ The SOCKS5 proxy normally listens on `127.0.0.1:9050`. With Dynamic port on (the
 default), AnonChat picks the next free port if 9050 is already taken, for
 example by another Tor or Anyone client. The address in use is shown in the
 Circuits tab. Changing the toggle takes effect the next time AnonChat starts.
+With Dynamic port off and 9050 taken by another program, AnonChat doesn't
+start: the start screen says so. It never sends through a port held by a
+program that isn't its own. Close that program, or turn Dynamic port back on.
+
+**Why did AnonChat stop with "The Anyone network program stopped"?**
+AnonChat's own copy of the Anyone network program (`anon`) exited. Without it,
+the port it used is free and another program could take it, so AnonChat stops
+too rather than send anything through it. Start AnonChat again. If it keeps
+happening, look at `anon/anon.log` in AnonChat's data folder before starting
+again (it is replaced at each start): its last lines say why.
 
 **Does closing AnonChat stop everything?**
 Yes. Quitting the app stops the whole backend: the local server, the `anon`
@@ -255,6 +265,35 @@ means nobody can reach them at the moment. The usual causes are a computer (or v
 machine) that slept or was paused overnight, its clock being wrong, or the same address
 running on two computers at once. Restarting AnonChat on *their* side, with the clock
 right, publishes their address afresh.
+
+To see where the way to a contact breaks, use **Test connection** in the chat's ⋮ menu.
+It checks, step by step, that your own address is published, that the contact's address
+can be found on the network, that their app answers, and that the two clocks agree
+(addresses are published under a daily period worked out from the time, so clocks that
+differ by minutes can fail to find each other). It then says in plain words what to do.
+If the contact answers, whatever is waiting for them is sent at once.
+
+AnonChat also looks up *your own* address through the network every few minutes (the
+**Findable** line next to **Service** in the Status tab). "Service: Reachable" only says
+that your address is published; **Findable: Yes** says a lookup through the network
+actually finds it. If it says **No**, AnonChat first clears the network's lookup memory,
+then sends your address details to the network again (at most every 10 minutes), and the
+Status log says what it did. If neither your contact's address nor your own can be found,
+Test connection points at this computer (usually the clock) instead of the contact.
+
+The light beside the name "AnonChat" (top left) sums this up. **Pulsing cyan**: the network
+is ready, your address is reachable and a lookup of it finds it. **Amber**: the network is
+still starting, or your address is not reachable yet, or a lookup of it just failed; hover
+over the light to see which, and AnonChat repairs the last case by itself. "Not checked
+yet" and "could not check" do not turn it amber. **Red**: the window has lost its link to
+the app. Cyan says people can reach *you*; it does not say a given contact is online (that
+is the dot on their picture).
+
+After a start, AnonChat now waits until the network is fully started and has a current
+list of relays (up to a few minutes) before it sends anything; messages made meanwhile
+wait in the queue as usual and go out when it is ready. A lookup that fails too early is
+remembered by the network for 15 minutes, which used to keep contacts out of reach after
+the first start of the day.
 
 **I got a "safety number changed" / key-change warning.**
 This means the contact's identity key no longer matches what you pinned. It can be

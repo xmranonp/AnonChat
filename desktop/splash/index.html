@@ -12,7 +12,7 @@
   @font-face { font-family: 'IBM Plex Mono'; font-weight: 400; src: url('fonts/IBMPlexMono-Regular.woff') format('woff'); }
   :root {
     --ink: #1A1A1A; --panel: #202020; --border: #333333;
-    --text: #ECECEC; --dim: #A8A8A8; --muted: #6E6E6E;
+    --text: #ECECEC; --dim: #A8A8A8; --muted: #969696;
     --signal: #1BC1EF; --signal-rgb: 27,193,239;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -140,7 +140,7 @@
   // ---- Passphrase steps ----
   // In the system's language (the window's own language setting isn't readable before the data is unlocked).
   const T = {
-    en: { connected: "connected", publishing: "publishing your address…", slow: "taking longer than expected…", slowHint: "the network may be slow — still trying", startFailed: "could not start", portBusy: "Another program is using the port AnonChat needs (47822). Close it and start AnonChat again.", enter: 'Enter your passphrase', unlock: 'Unlock', unlocking: 'Unlocking…', enterNote: 'Connecting to the Anyone network starts after you unlock.',
+    en: { connected: "connected", publishing: "publishing your address…", slow: "taking longer than expected…", slowHint: "the network may be slow — still trying", startFailed: "could not start", portBusy: "Another program is using the port AnonChat needs (47822). Close it and start AnonChat again.", socksBusy: "Another program is using port 9050, which AnonChat needs for the Anyone network, and “Dynamic port” is off. Close that program and start AnonChat again; turning on Dynamic port (Circuits tab) avoids this.", anonStopped: "The Anyone network program stopped. Start AnonChat again.", enter: 'Enter your passphrase', unlock: 'Unlock', unlocking: 'Unlocking…', enterNote: 'Connecting to the Anyone network starts after you unlock.',
       choose: 'Choose a passphrase', chooseNote: 'This system has no keyring to keep your encryption key, so AnonChat protects your data with a passphrase instead.',
       again: 'Type it again', cont: 'Continue', show: 'Show', hide: 'Hide', quit: 'Quit', forgot: 'Forgot it?',
       wrong: 'Wrong passphrase', empty: 'Type your passphrase', short: 'At least {n} characters', mismatch: 'The two don’t match',
@@ -149,7 +149,7 @@
       errTitle: 'Couldn’t unlock your data', vault: 'The system keyring didn’t give back AnonChat’s key. If you changed your login password or keyring recently, unlock the keyring and open AnonChat again.',
       novault: 'Your data is protected by the system keyring, which isn’t available right now. Sign in to your desktop session normally and open AnonChat again.',
       damaged: 'The file that holds the key to your data is damaged. Nothing has been changed.', startOver: 'Start over…' },
-    es: { connected: "conectado", publishing: "publicando tu dirección…", slow: "está tardando más de lo esperado…", slowHint: "puede que la red vaya lenta; seguimos intentándolo", startFailed: "no se pudo iniciar", portBusy: "Otro programa está usando el puerto que AnonChat necesita (47822). Ciérralo y vuelve a abrir AnonChat.", enter: 'Escribe tu frase de contraseña', unlock: 'Desbloquear', unlocking: 'Desbloqueando…', enterNote: 'La conexión a la red Anyone empieza después de desbloquear.',
+    es: { connected: "conectado", publishing: "publicando tu dirección…", slow: "está tardando más de lo esperado…", slowHint: "puede que la red vaya lenta; seguimos intentándolo", startFailed: "no se pudo iniciar", portBusy: "Otro programa está usando el puerto que AnonChat necesita (47822). Ciérralo y vuelve a abrir AnonChat.", socksBusy: "Otro programa está usando el puerto 9050, que AnonChat necesita para la red Anyone, y «Puerto dinámico» está desactivado. Ciérralo y vuelve a abrir AnonChat; activar Puerto dinámico (pestaña Circuitos) lo evita.", anonStopped: "El programa de la red Anyone se detuvo. Vuelve a abrir AnonChat.", enter: 'Escribe tu frase de contraseña', unlock: 'Desbloquear', unlocking: 'Desbloqueando…', enterNote: 'La conexión a la red Anyone empieza después de desbloquear.',
       choose: 'Elige una frase de contraseña', chooseNote: 'Este sistema no tiene un llavero para guardar tu clave de cifrado, así que AnonChat protege tus datos con una frase de contraseña.',
       again: 'Escríbela otra vez', cont: 'Continuar', show: 'Mostrar', hide: 'Ocultar', quit: 'Salir', forgot: '¿La olvidaste?',
       wrong: 'Frase de contraseña incorrecta', empty: 'Escribe tu frase de contraseña', short: 'Al menos {n} caracteres', mismatch: 'No coinciden',
@@ -158,7 +158,7 @@
       errTitle: 'No se pudieron desbloquear tus datos', vault: 'El llavero del sistema no devolvió la clave de AnonChat. Si cambiaste hace poco tu contraseña de inicio de sesión o el llavero, desbloquéalo y abre AnonChat de nuevo.',
       novault: 'Tus datos están protegidos por el llavero del sistema, que ahora no está disponible. Inicia tu sesión de escritorio normalmente y abre AnonChat de nuevo.',
       damaged: 'El archivo que guarda la clave de tus datos está dañado. No se ha cambiado nada.', startOver: 'Empezar de nuevo…' },
-    fr: { connected: "connecté", publishing: "publication de votre adresse…", slow: "cela prend plus de temps que prévu…", slowHint: "le réseau est peut-être lent ; nouvel essai en cours", startFailed: "impossible de démarrer", portBusy: "Un autre programme utilise le port dont AnonChat a besoin (47822). Fermez-le et relancez AnonChat.", enter: 'Saisissez votre phrase secrète', unlock: 'Déverrouiller', unlocking: 'Déverrouillage…', enterNote: 'La connexion au réseau Anyone commence après le déverrouillage.',
+    fr: { connected: "connecté", publishing: "publication de votre adresse…", slow: "cela prend plus de temps que prévu…", slowHint: "le réseau est peut-être lent ; nouvel essai en cours", startFailed: "impossible de démarrer", portBusy: "Un autre programme utilise le port dont AnonChat a besoin (47822). Fermez-le et relancez AnonChat.", socksBusy: "Un autre programme utilise le port 9050, dont AnonChat a besoin pour le réseau Anyone, et « Port dynamique » est désactivé. Fermez-le et relancez AnonChat ; activer Port dynamique (onglet Circuits) évite ce problème.", anonStopped: "Le programme du réseau Anyone s’est arrêté. Relancez AnonChat.", enter: 'Saisissez votre phrase secrète', unlock: 'Déverrouiller', unlocking: 'Déverrouillage…', enterNote: 'La connexion au réseau Anyone commence après le déverrouillage.',
       choose: 'Choisissez une phrase secrète', chooseNote: 'Ce système n’a pas de trousseau pour conserver votre clé de chiffrement : AnonChat protège donc vos données avec une phrase secrète.',
       again: 'Saisissez-la à nouveau', cont: 'Continuer', show: 'Afficher', hide: 'Masquer', quit: 'Quitter', forgot: 'Oubliée ?',
       wrong: 'Phrase secrète incorrecte', empty: 'Saisissez votre phrase secrète', short: 'Au moins {n} caractères', mismatch: 'Les deux ne correspondent pas',
@@ -167,7 +167,7 @@
       errTitle: 'Impossible de déverrouiller vos données', vault: 'Le trousseau du système n’a pas rendu la clé d’AnonChat. Si vous avez changé récemment votre mot de passe de session ou votre trousseau, déverrouillez-le et rouvrez AnonChat.',
       novault: 'Vos données sont protégées par le trousseau du système, indisponible pour le moment. Ouvrez votre session normalement et rouvrez AnonChat.',
       damaged: 'Le fichier qui contient la clé de vos données est endommagé. Rien n’a été modifié.', startOver: 'Recommencer…' },
-    it: { connected: "connesso", publishing: "pubblicazione del tuo indirizzo…", slow: "ci vuole più del previsto…", slowHint: "la rete potrebbe essere lenta: nuovo tentativo in corso", startFailed: "impossibile avviare", portBusy: "Un altro programma sta usando la porta che serve ad AnonChat (47822). Chiudilo e riavvia AnonChat.", enter: 'Inserisci la passphrase', unlock: 'Sblocca', unlocking: 'Sblocco…', enterNote: 'La connessione alla rete Anyone inizia dopo lo sblocco.',
+    it: { connected: "connesso", publishing: "pubblicazione del tuo indirizzo…", slow: "ci vuole più del previsto…", slowHint: "la rete potrebbe essere lenta: nuovo tentativo in corso", startFailed: "impossibile avviare", portBusy: "Un altro programma sta usando la porta che serve ad AnonChat (47822). Chiudilo e riavvia AnonChat.", socksBusy: "Un altro programma sta usando la porta 9050, che serve ad AnonChat per la rete Anyone, e «Porta dinamica» è disattivata. Chiudilo e riavvia AnonChat; attivare Porta dinamica (scheda Circuiti) lo evita.", anonStopped: "Il programma della rete Anyone si è fermato. Riavvia AnonChat.", enter: 'Inserisci la passphrase', unlock: 'Sblocca', unlocking: 'Sblocco…', enterNote: 'La connessione alla rete Anyone inizia dopo lo sblocco.',
       choose: 'Scegli una passphrase', chooseNote: 'Questo sistema non ha un portachiavi per conservare la chiave di cifratura, quindi AnonChat protegge i tuoi dati con una passphrase.',
       again: 'Scrivila di nuovo', cont: 'Continua', show: 'Mostra', hide: 'Nascondi', quit: 'Esci', forgot: 'Dimenticata?',
       wrong: 'Passphrase errata', empty: 'Scrivi la passphrase', short: 'Almeno {n} caratteri', mismatch: 'Non coincidono',
@@ -176,7 +176,7 @@
       errTitle: 'Impossibile sbloccare i dati', vault: 'Il portachiavi di sistema non ha restituito la chiave di AnonChat. Se hai cambiato di recente la password di accesso o il portachiavi, sbloccalo e riapri AnonChat.',
       novault: 'I tuoi dati sono protetti dal portachiavi di sistema, ora non disponibile. Accedi normalmente alla sessione e riapri AnonChat.',
       damaged: 'Il file che contiene la chiave dei tuoi dati è danneggiato. Non è stato cambiato nulla.', startOver: 'Ricomincia…' },
-    de: { connected: "verbunden", publishing: "Adresse wird veröffentlicht…", slow: "dauert länger als erwartet…", slowHint: "das Netzwerk ist eventuell langsam – neuer Versuch läuft", startFailed: "konnte nicht starten", portBusy: "Ein anderes Programm belegt den Port, den AnonChat braucht (47822). Schließe es und starte AnonChat neu.", enter: 'Passphrase eingeben', unlock: 'Entsperren', unlocking: 'Wird entsperrt…', enterNote: 'Die Verbindung zum Anyone-Netzwerk beginnt nach dem Entsperren.',
+    de: { connected: "verbunden", publishing: "Adresse wird veröffentlicht…", slow: "dauert länger als erwartet…", slowHint: "das Netzwerk ist eventuell langsam – neuer Versuch läuft", startFailed: "konnte nicht starten", portBusy: "Ein anderes Programm belegt den Port, den AnonChat braucht (47822). Schließe es und starte AnonChat neu.", socksBusy: "Ein anderes Programm belegt Port 9050, den AnonChat für das Anyone-Netzwerk braucht, und „Dynamischer Port“ ist aus. Schließe es und starte AnonChat neu; mit Dynamischer Port (Tab Circuits) passiert das nicht.", anonStopped: "Das Programm für das Anyone-Netzwerk wurde beendet. Starte AnonChat neu.", enter: 'Passphrase eingeben', unlock: 'Entsperren', unlocking: 'Wird entsperrt…', enterNote: 'Die Verbindung zum Anyone-Netzwerk beginnt nach dem Entsperren.',
       choose: 'Passphrase wählen', chooseNote: 'Dieses System hat keinen Schlüsselbund für deinen Verschlüsselungsschlüssel, daher schützt AnonChat deine Daten mit einer Passphrase.',
       again: 'Noch einmal eingeben', cont: 'Weiter', show: 'Zeigen', hide: 'Verbergen', quit: 'Beenden', forgot: 'Vergessen?',
       wrong: 'Falsche Passphrase', empty: 'Passphrase eingeben', short: 'Mindestens {n} Zeichen', mismatch: 'Die beiden stimmen nicht überein',
@@ -185,7 +185,7 @@
       errTitle: 'Daten konnten nicht entsperrt werden', vault: 'Der System-Schlüsselbund hat den Schlüssel von AnonChat nicht herausgegeben. Wenn du kürzlich dein Anmeldepasswort oder den Schlüsselbund geändert hast, entsperre ihn und öffne AnonChat erneut.',
       novault: 'Deine Daten sind durch den System-Schlüsselbund geschützt, der gerade nicht verfügbar ist. Melde dich normal an und öffne AnonChat erneut.',
       damaged: 'Die Datei mit dem Schlüssel zu deinen Daten ist beschädigt. Es wurde nichts geändert.', startOver: 'Neu beginnen…' },
-    pt: { connected: "ligado", publishing: "a publicar o seu endereço…", slow: "está a demorar mais do que o previsto…", slowHint: "a rede pode estar lenta; a tentar novamente", startFailed: "não foi possível iniciar", portBusy: "Outro programa está a usar a porta de que o AnonChat precisa (47822). Feche‑o e volte a abrir o AnonChat.", enter: 'Introduza a sua palavra-passe', unlock: 'Desbloquear', unlocking: 'A desbloquear…', enterNote: 'A ligação à rede Anyone começa depois de desbloquear.',
+    pt: { connected: "ligado", publishing: "a publicar o seu endereço…", slow: "está a demorar mais do que o previsto…", slowHint: "a rede pode estar lenta; a tentar novamente", startFailed: "não foi possível iniciar", portBusy: "Outro programa está a usar a porta de que o AnonChat precisa (47822). Feche‑o e volte a abrir o AnonChat.", socksBusy: "Outro programa está a usar a porta 9050, de que o AnonChat precisa para a rede Anyone, e a «Porta dinâmica» está desligada. Feche‑o e volte a abrir o AnonChat; ligar a Porta dinâmica (separador Circuitos) evita isto.", anonStopped: "O programa da rede Anyone parou. Volte a abrir o AnonChat.", enter: 'Introduza a sua palavra-passe', unlock: 'Desbloquear', unlocking: 'A desbloquear…', enterNote: 'A ligação à rede Anyone começa depois de desbloquear.',
       choose: 'Escolha uma palavra-passe', chooseNote: 'Este sistema não tem um porta-chaves para guardar a sua chave de encriptação, por isso o AnonChat protege os seus dados com uma palavra-passe.',
       again: 'Introduza-a novamente', cont: 'Continuar', show: 'Mostrar', hide: 'Ocultar', quit: 'Sair', forgot: 'Esqueceu-se?',
       wrong: 'Palavra-passe incorreta', empty: 'Introduza a sua palavra-passe', short: 'Pelo menos {n} caracteres', mismatch: 'As duas não coincidem',
@@ -194,7 +194,7 @@
       errTitle: 'Não foi possível desbloquear os seus dados', vault: 'O porta-chaves do sistema não devolveu a chave do AnonChat. Se mudou recentemente a palavra-passe da sua conta no computador ou o porta-chaves, desbloqueie-o e abra o AnonChat novamente.',
       novault: 'Os seus dados estão protegidos pelo porta-chaves do sistema, que agora não está disponível. Inicie a sessão normalmente e abra o AnonChat novamente.',
       damaged: 'O ficheiro com a chave dos seus dados está danificado. Nada foi alterado.', startOver: 'Recomeçar…' },
-    zh: { connected: "已连接", publishing: "正在发布你的地址…", slow: "耗时比预期长…", slowHint: "网络可能较慢，仍在尝试", startFailed: "无法启动", portBusy: "另一个程序正在使用 AnonChat 需要的端口（47822）。请关闭该程序后重新打开 AnonChat。", enter: '输入你的密码短语', unlock: '解锁', unlocking: '正在解锁…', enterNote: '解锁后才会开始连接 Anyone 网络。',
+    zh: { connected: "已连接", publishing: "正在发布你的地址…", slow: "耗时比预期长…", slowHint: "网络可能较慢，仍在尝试", startFailed: "无法启动", portBusy: "另一个程序正在使用 AnonChat 需要的端口（47822）。请关闭该程序后重新打开 AnonChat。", socksBusy: "另一个程序正在使用端口 9050（AnonChat 连接 Anyone 网络需要它），且“动态端口”已关闭。请关闭该程序后重新打开 AnonChat；开启动态端口（线路标签页）可避免此问题。", anonStopped: "Anyone 网络程序已停止。请重新打开 AnonChat。", enter: '输入你的密码短语', unlock: '解锁', unlocking: '正在解锁…', enterNote: '解锁后才会开始连接 Anyone 网络。',
       choose: '设置密码短语', chooseNote: '此系统没有可保存加密密钥的密钥环，因此 AnonChat 改用密码短语保护你的数据。',
       again: '再输入一次', cont: '继续', show: '显示', hide: '隐藏', quit: '退出', forgot: '忘记了？',
       wrong: '密码短语错误', empty: '请输入密码短语', short: '至少 {n} 个字符', mismatch: '两次输入不一致',
@@ -203,7 +203,7 @@
       errTitle: '无法解锁你的数据', vault: '系统密钥环没有返回 AnonChat 的密钥。如果你最近更改了登录密码或密钥环，请解锁密钥环后重新打开 AnonChat。',
       novault: '你的数据由系统密钥环保护，但它目前不可用。请正常登录桌面会话后重新打开 AnonChat。',
       damaged: '保存数据密钥的文件已损坏。没有做任何更改。', startOver: '重新开始…' },
-    ja: { connected: "接続しました", publishing: "アドレスを公開中…", slow: "予想より時間がかかっています…", slowHint: "ネットワークが遅い可能性があります。再試行中", startFailed: "起動できませんでした", portBusy: "AnonChat が必要とするポート（47822）を別のプログラムが使用しています。そのプログラムを閉じてから AnonChat を起動し直してください。", enter: 'パスフレーズを入力', unlock: 'ロック解除', unlocking: 'ロック解除中…', enterNote: 'Anyone ネットワークへの接続はロック解除後に始まります。',
+    ja: { connected: "接続しました", publishing: "アドレスを公開中…", slow: "予想より時間がかかっています…", slowHint: "ネットワークが遅い可能性があります。再試行中", startFailed: "起動できませんでした", portBusy: "AnonChat が必要とするポート（47822）を別のプログラムが使用しています。そのプログラムを閉じてから AnonChat を起動し直してください。", socksBusy: "AnonChat が Anyone ネットワークに必要なポート 9050 を別のプログラムが使用しており、「ダイナミックポート」がオフです。そのプログラムを閉じて AnonChat を起動し直してください。ダイナミックポート（回路タブ）をオンにすると防げます。", anonStopped: "Anyone ネットワークのプログラムが停止しました。AnonChat を起動し直してください。", enter: 'パスフレーズを入力', unlock: 'ロック解除', unlocking: 'ロック解除中…', enterNote: 'Anyone ネットワークへの接続はロック解除後に始まります。',
       choose: 'パスフレーズを設定', chooseNote: 'このシステムには暗号化キーを保管するキーリングがないため、AnonChat はパスフレーズでデータを保護します。',
       again: 'もう一度入力', cont: '続ける', show: '表示', hide: '隠す', quit: '終了', forgot: '忘れた場合',
       wrong: 'パスフレーズが違います', empty: 'パスフレーズを入力してください', short: '{n} 文字以上', mismatch: '2 つが一致しません',
@@ -212,7 +212,7 @@
       errTitle: 'データのロックを解除できませんでした', vault: 'システムのキーリングが AnonChat のキーを返しませんでした。最近ログインパスワードやキーリングを変更した場合は、キーリングのロックを解除してから AnonChat を開き直してください。',
       novault: 'データはシステムのキーリングで保護されていますが、現在利用できません。通常どおりデスクトップにログインしてから AnonChat を開き直してください。',
       damaged: 'データのキーを保存しているファイルが破損しています。何も変更されていません。', startOver: 'やり直す…' },
-    pl: { connected: "połączono", publishing: "publikowanie adresu…", slow: "trwa to dłużej niż zwykle…", slowHint: "sieć może być wolna — wciąż próbujemy", startFailed: "nie udało się uruchomić", portBusy: "Inny program używa portu potrzebnego AnonChat (47822). Zamknij go i uruchom AnonChat ponownie.", enter: 'Wpisz hasło', unlock: 'Odblokuj', unlocking: 'Odblokowywanie…', enterNote: 'Połączenie z siecią Anyone zaczyna się po odblokowaniu.',
+    pl: { connected: "połączono", publishing: "publikowanie adresu…", slow: "trwa to dłużej niż zwykle…", slowHint: "sieć może być wolna — wciąż próbujemy", startFailed: "nie udało się uruchomić", portBusy: "Inny program używa portu potrzebnego AnonChat (47822). Zamknij go i uruchom AnonChat ponownie.", socksBusy: "Inny program używa portu 9050, którego AnonChat potrzebuje do sieci Anyone, a „Port dynamiczny” jest wyłączony. Zamknij go i uruchom AnonChat ponownie; włączenie Portu dynamicznego (karta Obwody) temu zapobiega.", anonStopped: "Program sieci Anyone zatrzymał się. Uruchom AnonChat ponownie.", enter: 'Wpisz hasło', unlock: 'Odblokuj', unlocking: 'Odblokowywanie…', enterNote: 'Połączenie z siecią Anyone zaczyna się po odblokowaniu.',
       choose: 'Wybierz hasło', chooseNote: 'Ten system nie ma pęku kluczy, w którym można przechować klucz szyfrowania, więc AnonChat chroni dane hasłem.',
       again: 'Wpisz je ponownie', cont: 'Dalej', show: 'Pokaż', hide: 'Ukryj', quit: 'Zamknij', forgot: 'Nie pamiętasz?',
       wrong: 'Nieprawidłowe hasło', empty: 'Wpisz hasło', short: 'Co najmniej {n} znaków', mismatch: 'Hasła się różnią',
@@ -221,7 +221,7 @@
       errTitle: 'Nie udało się odblokować danych', vault: 'Systemowy pęk kluczy nie zwrócił klucza AnonChat. Jeśli niedawno zmieniono hasło logowania lub pęk kluczy, odblokuj go i otwórz AnonChat ponownie.',
       novault: 'Dane są chronione systemowym pękiem kluczy, który jest teraz niedostępny. Zaloguj się normalnie i otwórz AnonChat ponownie.',
       damaged: 'Plik z kluczem do danych jest uszkodzony. Niczego nie zmieniono.', startOver: 'Zacznij od nowa…' },
-    hi: { connected: "कनेक्ट हो गया", publishing: "आपका पता प्रकाशित हो रहा है…", slow: "उम्मीद से ज़्यादा समय लग रहा है…", slowHint: "नेटवर्क धीमा हो सकता है — कोशिश जारी है", startFailed: "शुरू नहीं हो सका", portBusy: "कोई दूसरा प्रोग्राम वह पोर्ट (47822) इस्तेमाल कर रहा है जिसकी AnonChat को ज़रूरत है। उसे बंद करें और AnonChat फिर से शुरू करें।", enter: 'अपना पासफ़्रेज़ दर्ज करें', unlock: 'अनलॉक करें', unlocking: 'अनलॉक हो रहा है…', enterNote: 'अनलॉक करने के बाद Anyone नेटवर्क से जुड़ना शुरू होता है।',
+    hi: { connected: "कनेक्ट हो गया", publishing: "आपका पता प्रकाशित हो रहा है…", slow: "उम्मीद से ज़्यादा समय लग रहा है…", slowHint: "नेटवर्क धीमा हो सकता है — कोशिश जारी है", startFailed: "शुरू नहीं हो सका", portBusy: "कोई दूसरा प्रोग्राम वह पोर्ट (47822) इस्तेमाल कर रहा है जिसकी AnonChat को ज़रूरत है। उसे बंद करें और AnonChat फिर से शुरू करें।", socksBusy: "कोई दूसरा प्रोग्राम पोर्ट 9050 इस्तेमाल कर रहा है, जिसकी AnonChat को Anyone नेटवर्क के लिए ज़रूरत है, और “डायनामिक पोर्ट” बंद है। उसे बंद करें और AnonChat फिर से शुरू करें; डायनामिक पोर्ट (सर्किट टैब) चालू करने से ऐसा नहीं होगा।", anonStopped: "Anyone नेटवर्क प्रोग्राम रुक गया। AnonChat फिर से शुरू करें।", enter: 'अपना पासफ़्रेज़ दर्ज करें', unlock: 'अनलॉक करें', unlocking: 'अनलॉक हो रहा है…', enterNote: 'अनलॉक करने के बाद Anyone नेटवर्क से जुड़ना शुरू होता है।',
       choose: 'पासफ़्रेज़ चुनें', chooseNote: 'इस सिस्टम में एन्क्रिप्शन कुंजी रखने के लिए कीरिंग नहीं है, इसलिए AnonChat आपके डेटा को पासफ़्रेज़ से सुरक्षित रखता है।',
       again: 'फिर से टाइप करें', cont: 'जारी रखें', show: 'दिखाएँ', hide: 'छिपाएँ', quit: 'बंद करें', forgot: 'भूल गए?',
       wrong: 'गलत पासफ़्रेज़', empty: 'अपना पासफ़्रेज़ टाइप करें', short: 'कम से कम {n} अक्षर', mismatch: 'दोनों मेल नहीं खाते',
@@ -292,8 +292,10 @@
   on('backend-error', (msg) => {
     statusEl.textContent = S.startFailed;
     // exit 5: the port the address uses is held by another program (server.js listenPublic).
-    hintEl.classList.toggle('long', msg === 'exit 5');
-    hintEl.textContent = msg === 'exit 5' ? S.portBusy : String(msg || '').slice(0, 60);
+    // exit 6: port 9050 held by another program with "Dynamic port" off; exit 7: the Anyone network program stopped (start.js).
+    const known = { 'exit 5': S.portBusy, 'exit 6': S.socksBusy, 'exit 7': S.anonStopped }[msg];
+    hintEl.classList.toggle('long', !!known);
+    hintEl.textContent = known || String(msg || '').slice(0, 60);
   });
 </script>
 </body>

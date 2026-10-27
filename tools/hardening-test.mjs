@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import http from 'node:http';
 import net from 'node:net';
+import zlib from 'node:zlib';
 
 const APP = process.argv[2] || join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const require = createRequire(import.meta.url);
@@ -58,7 +59,43 @@ try {
   ok('a small notice on the public port is read', (await pubPost('/api/profile-bump', JSON.stringify({ from: FRIEND }))) === 200);
   ok('a large body on the public port is refused unless it is a message', (await pubPost('/api/profile-bump', JSON.stringify({ from: FRIEND, pad: 'x'.repeat(20000) }))) === 413);
   ok('…a message may still be large', (await pubPost('/api/inbox', JSON.stringify({ pad: 'x'.repeat(20000) }))) === 400);   // read, then refused as malformed
+  // Compressed request bodies are refused, never unpacked (body-parser <1.20.9: trailing bytes after a compressed body).
+  const raw = (port, path, buf, headers) => new Promise((res, rej) => {
+    const r = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': buf.length, ...headers } },
+      (resp) => { resp.resume(); resp.on('end', () => res(resp.statusCode)); });
+    r.on('error', rej); r.end(buf);
+  });
+  const json = JSON.stringify({ from: FRIEND });
+  ok('a gzip body on the public port is refused (415)', (await raw(6412, '/api/profile-bump', zlib.gzipSync(json), { Host: ME, 'Content-Encoding': 'gzip' })) === 415);
+  ok('…with bytes after it too', (await raw(6412, '/api/profile-bump', Buffer.concat([zlib.gzipSync(json), Buffer.from('trailing')]), { Host: ME, 'Content-Encoding': 'gzip' })) === 415);
+  ok('…deflate and brotli too', (await raw(6412, '/api/profile-bump', zlib.deflateSync(json), { Host: ME, 'Content-Encoding': 'deflate' })) === 415
+    && (await raw(6412, '/api/inbox', zlib.brotliCompressSync(json), { Host: ME, 'Content-Encoding': 'br' })) === 415);
+  ok('a gzip body on the window’s port is refused as well', (await raw(6411, '/api/network/dynamic-port', zlib.gzipSync('{}'), { 'X-AnonChat-Token': TOKEN, 'Content-Encoding': 'gzip' })) === 415);
+  ok('a plain body is still read after all that', (await pubPost('/api/profile-bump', json)) === 200);
 } finally { srv.kill(); }
+
+console.log('Who our contacts are (proof of work asked before any check that depends on the claimed address)');
+{
+  const BLOCKED = 'b'.repeat(56) + '.anyone', OTHER = 'o'.repeat(56) + '.anyone';
+  const dd = freshDir(true);
+  writeFileSync(join(dd, 'data', 'mailbox.json'), JSON.stringify({ [FRIEND]: Buffer.alloc(32, 7).toString('base64') }));
+  writeFileSync(join(dd, 'data', 'blocked.json'), JSON.stringify([BLOCKED]));
+  writeFileSync(join(dd, 'data', 'settings.json'), JSON.stringify({ powAlways: true }));
+  const s3 = node(dd, 6432, 6431);
+  const post3 = (data) => new Promise((res, rej) => {
+    const r = http.request({ host: '127.0.0.1', port: 6432, path: '/api/inbox', method: 'POST', headers: { Host: ME, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } },
+      (resp) => { resp.resume(); resp.on('end', () => res(resp.statusCode)); });
+    r.on('error', rej); r.end(data);
+  });
+  try {
+    for (let i = 0; i < 200; i++) { try { await fetch('http://127.0.0.1:6431/api/version', { headers: { 'X-AnonChat-Token': TOKEN } }); break; } catch { await new Promise((r) => setTimeout(r, 150)); } }
+    let k = 0;
+    const probe = (from) => post3(JSON.stringify({ from, dh: 'd', ct: 'probe' + (k++), n: 0, x3dh: { ik: 'WRONG', ek: 'E' } }));
+    const contact = await probe(FRIEND), blocked = await probe(BLOCKED), stranger = await probe(OTHER);
+    ok('while proof of work is asked for, claiming a contact (with the wrong key) gets the same answer as a stranger', contact === 402 && stranger === 402, contact + ' / ' + stranger);
+    ok('…and so does claiming a blocked address', blocked === 402, blocked);
+  } finally { s3.kill(); }
+}
 
 console.log('Profile notices');
 {

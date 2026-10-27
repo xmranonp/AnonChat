@@ -16,6 +16,8 @@ class Net:
         peers = {v['addr']: v['pub'] for v in self.nodes.values()}
         peers.update(extra_peers or {})
         self.peers = peers
+        self.hide_file = tempfile.mktemp(prefix='hidden-'); open(self.hide_file, 'w').write('[]')
+        os.environ['FSOCKS_HIDE_FILE'] = self.hide_file
         fsocks.start(json.dumps(peers))
         self.env = env or {}
         for n in names: self.start(n)
@@ -31,6 +33,9 @@ class Net:
         env.update(self.env)                 # a suite may override any of these (a fake control port, say)
         app = self.apps.get(n, APP)
         self.procs[n] = subprocess.Popen(['node', app + '/server.js'], env=env, cwd=app, stdout=open(v['dir'] + '/log', 'a'), stderr=subprocess.STDOUT)
+    def hide(self, *names):
+        """The network can't find these nodes' addresses ("descriptor not found") until hide() is called without names."""
+        open(self.hide_file, 'w').write(json.dumps([self.nodes[n]['addr'] for n in names]))
     def stop(self, n):
         p = self.procs.pop(n, None)
         if p: p.terminate(); p.wait(10)

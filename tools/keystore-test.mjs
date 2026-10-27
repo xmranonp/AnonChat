@@ -43,6 +43,28 @@ console.log('3. Damage and the window key');
 writeFileSync(join(dir, 'keystore.json'), '{ "v": 1, "mode": ');
 let threw = false; try { ks.load(dir); } catch { threw = true; }
 ok('a damaged keystore throws (the start screen says so) instead of a fresh key', threw);
+{
+  await ks.wrapPassphrase(dir, 'correct horse battery staple', dk);
+  const good = JSON.parse(readFileSync(join(dir, 'keystore.json'), 'utf8'));
+  const loads = (o) => { writeFileSync(join(dir, 'keystore.json'), JSON.stringify(o)); try { ks.load(dir); return true; } catch { return false; } };
+  const mut = (f) => { const o = JSON.parse(JSON.stringify(good)); f(o); return o; };
+  ok('an intact passphrase keystore still loads', loads(good));
+  ok('scrypt N not a power of 2 is damage', !loads(mut((o) => { o.kdf.N = 1000; })));
+  ok('scrypt N huge is damage (would hang or run out of memory)', !loads(mut((o) => { o.kdf.N = 2 ** 30; })));
+  ok('scrypt settings as text are damage', !loads(mut((o) => { o.kdf.N = '131072'; })));
+  ok('missing kdf is damage', !loads(mut((o) => { delete o.kdf; })));
+  ok('missing salt is damage', !loads(mut((o) => { delete o.kdf.salt; })));
+  ok('short iv is damage', !loads(mut((o) => { o.iv = 'AAAA'; })));
+  ok('missing tag is damage', !loads(mut((o) => { delete o.tag; })));
+  ok('wrong-size ciphertext is damage', !loads(mut((o) => { o.ct = 'AAAA'; })));
+  ok('an OS keystore with nothing wrapped is damage', !loads({ v: 1, mode: 'os' }));
+}
+{
+  const { readdirSync } = await import('node:fs');
+  writeFileSync(join(dir, 'keystore.json.999.tmp'), 'half a save'); writeFileSync(join(dir, 'other.tmp'), 'not ours');
+  await ks.wrapPassphrase(dir, 'correct horse battery staple', dk); ks.load(dir);
+  ok('a leftover of an interrupted save is removed on load, other files are not', !readdirSync(dir).includes('keystore.json.999.tmp') && readdirSync(dir).includes('other.tmp'));
+}
 ok('window key: derived, stable, not the data key', ks.windowKey(dk).equals(ks.windowKey(dk)) && !ks.windowKey(dk).equals(dk));
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

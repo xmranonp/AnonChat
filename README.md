@@ -22,9 +22,9 @@ Most messengers route your conversations through corporate servers that can see 
 
 ###  Privacy & Security
 
-- **End-to-end encryption** \- Double Ratchet (X3DH handshake, forward secrecy) over NIST **P-256**, AES-256-GCM, HKDF/HMAC-SHA256.
+- **End-to-end encryption** \- Double Ratchet (X3DH handshake, forward secrecy) over NIST **P-256**, AES-256-GCM, HKDF/HMAC-SHA256. Messages written before the other side's first reply rest on their signed prekey (and a one-time prekey, when one is left), so their forward secrecy is limited to that key's lifetime: it is replaced every week and the old private half deleted after 60 days.
 
-- **Signed prekeys** \- your medium-term prekey is signed by a separate identity signing key (ECDSA P-256), so a man-in-the-middle can't substitute it. Verification is fail-closed.
+- **Signed prekeys** \- your medium-term prekey, replaced every week, is signed by a separate identity signing key (ECDSA P-256); contacts take a new one only with a valid signature by the signing key pinned when they added you. The keys themselves are authenticated by your `.anyone` address, which only your computer can answer at; compare safety numbers to rule out a substitution at the moment you add someone. Verification is fail-closed.
 
 - **Anyone Protocol hidden services** for all transport - content *and* network location are hidden.
 
@@ -56,7 +56,7 @@ Most messengers route your conversations through corporate servers that can see 
 
 - **Voice messages** (up to one minute, with a live timer, level meter and cancel) and drag-and-drop **file / image / video sharing** (up to 5 MB), kept encrypted on disk; Settings → Storage shows usage per chat and clears old media.
 
-- **Offline delivery** \- a message to a contact who is offline waits on your computer and is retried every 15 s for 1, 12 or 24 hours (per chat). It goes out as soon as they are back: their app tells yours when it comes online, and so does any message from them. A route that stopped working is replaced by itself after a failed try, and **Rebuild network path** (the chat's ⋮ menu) does it at once. A dot shows whether each contact can be reached.
+- **Offline delivery** \- a message to a contact who is offline waits on your computer and is retried every 15 s for 1, 12 or 24 hours (per chat). It goes out as soon as they are back: their app tells yours when it comes online, and so does any message from them. A route that stopped working is replaced by itself after a failed try, and **Rebuild network path** (the chat's ⋮ menu) does it at once. **Test connection**, in the same menu, checks step by step where the way to a contact breaks (your address, theirs, their app, the clocks) and says what to do. Your own address is also looked up through the network every few minutes (the **Findable** line in Status); if it can't be found, the network's lookup memory is cleared and the address details are sent again. After a start, nothing is sent until the network is fully started and has a current relay list. A dot shows whether each contact can be reached. The light beside the app name sums up your own side: pulsing cyan when the network is ready, your address is reachable and a lookup of it finds it; amber (with the reason on hover) when the network is still starting, the address is not reachable yet, or the lookup of it failed and is being repaired; red when the window has lost its link to the app.
 
 - **Messages in the order written** \- each message goes out on its own (no waiting behind the one before), and the receiving app shows them in the order they were written even when the network delivers them out of order.
 
@@ -128,7 +128,7 @@ AnonChat is an **Electron desktop app** wrapping a local Node.js backend and a s
 
 | Layer                                                                                    | Technology                                                                               |
 | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| **Desktop shell**                                                                        | Electron 44 (Chromium 152); backend on Node 22 LTS                                       |
+| **Desktop shell**                                                                        | Electron 45 (Chromium 156); backend on Node 24 LTS                                       |
 | **UI**                                                                                   | Vanilla JS in a sandboxed renderer (`contextIsolation`, `sandbox`, no `nodeIntegration`) |
 | **Local backend**                                                                        | Express / Node.js (`server.js`) — onion-facing + loopback routers                        |
 | **Encryption**                                                                           | WebCrypto: Double Ratchet + X3DH, P-256, AES-256-GCM, ECDSA-signed prekeys               |
@@ -172,14 +172,15 @@ AnonChat layers three independent protections:
 | Server compromise                                      | No servers exist to compromise                         |
 | Network surveillance                                   | Anyone Protocol onion routing                          |
 | Message interception                                   | Double Ratchet end-to-end encryption                   |
-| Prekey substitution / MITM                             | ECDSA-signed prekeys, pinned per contact (fail-closed) |
+| Prekey substitution / MITM                             | Keys fetched from the contact's own `.anyone` address and pinned; prekeys signed (fail-closed); safety numbers |
 | Replay                                                 | Per-message consumed-key set in the ratchet            |
 | Offline disk access                                    | Everything on disk encrypted; key in the OS vault or under a passphrase |
-| Inbox flooding by strangers                            | Small stranger allowances, proof of work during a flood, a hard total with "retry later" |
+| Inbox flooding by strangers                            | Small stranger allowances, proof of work during a flood (asked before anything that would tell who your contacts are), a hard total with "retry later" |
 | Posing as a contact to get their inbox allowance       | Every message carries a stamp made with a key only the two people share (deniable: proves nothing to others) |
-| Another program on the computer taking the port your address uses | The app takes it first and stops (saying so) if it can't |
+| Another program on the computer taking the port your address uses | The app takes it first and stops (saying so) if it can't; the same for the network's proxy port, and it stops if its network program stops |
 | A recipient demanding endless proof of work            | Difficulty capped; anything higher refused at once     |
-| Draining one-time prekeys                              | Handed out sparingly (20, then 10 an hour); unused private halves dropped after 14 days, 500 at most |
+| A contact answering one byte at a time to stall the app | Every request to another node has a hard deadline; a slow recipient never holds up the others |
+| Draining one-time prekeys                              | Handed out sparingly (20, then 10 an hour); unused private halves dropped after 14 days, 4,000 at most; without one, the weekly signed prekey limits what a later key theft could read |
 | Metadata analysis                                      | No central server means no central metadata to collect |
 
 ---

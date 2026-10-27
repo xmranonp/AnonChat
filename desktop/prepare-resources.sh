@@ -2,7 +2,7 @@
 # Stages everything the desktop build bundles:
 #   desktop/resources/app/      server.js, start.js, package.json, lib/, public/, app_modules/
 #   desktop/resources/runtime/  node (portable runtime) and anon
-# Usage: ANON_BIN=~/anon-v0.4.10.2/anon ./prepare-resources.sh
+# Usage: ANON_BIN=~/anon-v0.4.10.2/anon ./prepare-resources.sh   (the binary must be listed in anon-sha256.txt)
 # Runs on Linux (for the .deb / pacman builds) and macOS (for the .dmg); the Node runtime matches this machine's OS and CPU.
 
 set -euo pipefail
@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/.." && pwd)"
 RES="$HERE/resources"
-NODE_VERSION="${NODE_VERSION:-22.23.1}"
+NODE_VERSION="${NODE_VERSION:-24.22.1}"   # 24.22.1+: Node security release of 21 Oct 2026 (CVE-2026-111497, Brotli decoder)
 
 echo "==> AnonChat resource staging"
 echo "    project root: $PROJECT_ROOT"
@@ -52,17 +52,36 @@ echo "    target:       $NODE_OS-$NODE_ARCH"
 
 sha256_of() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
 
+# The anon binary must be one listed in anon-sha256.txt: the exact builds this project has checked and decided to ship. A binary that
+# isn't listed (another version, or a modified file) stops the build here.
+# Everything is copied to, or downloaded into, a folder only this user can open, and the file checked is the file used: nothing in a
+# shared folder (/tmp) can be swapped in between the check and the use.
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+cp "$ANON_BIN" "$WORK/anon"
+ANON_PINS="$HERE/anon-sha256.txt"
+ANON_SHA="$(sha256_of "$WORK/anon")"
+if ! grep -v '^[[:space:]]*#' "$ANON_PINS" 2>/dev/null | awk '{print tolower($1)}' | grep -qx "$ANON_SHA"; then
+  echo "!! this anon binary is not in desktop/anon-sha256.txt:" >&2
+  echo "     $ANON_BIN" >&2
+  echo "     SHA-256 $ANON_SHA" >&2
+  echo "   If it comes from the release you mean to ship (checked as anon-sha256.txt describes), add this line to that file:" >&2
+  echo "     $ANON_SHA  $NODE_OS-$NODE_ARCH  anon <version>" >&2
+  exit 1
+fi
+echo "    anon pinned:  $(grep -i "^$ANON_SHA" "$ANON_PINS" | head -1 | cut -d' ' -f2- | sed 's/^ *//')"
+
 echo "==> staging Node runtime"
 mkdir -p "$RES/runtime"
 NODE_NAME="node-v${NODE_VERSION}-${NODE_OS}-${NODE_ARCH}.${NODE_EXT}"
-if [[ -z "${NODE_TARBALL:-}" ]]; then
-  NODE_TARBALL="/tmp/${NODE_NAME}"
-  if [[ ! -f "$NODE_TARBALL" ]]; then
-    URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_NAME}"
-    echo "    downloading $URL"
-    curl -fsSL "$URL" -o "$NODE_TARBALL"
-  fi
+if [[ -n "${NODE_TARBALL:-}" ]]; then
+  cp "$NODE_TARBALL" "$WORK/$NODE_NAME"
+else
+  URL="https://nodejs.org/dist/v${NODE_VERSION}/${NODE_NAME}"
+  echo "    downloading $URL"
+  curl -fsSL "$URL" -o "$WORK/$NODE_NAME"
 fi
+NODE_TARBALL="$WORK/$NODE_NAME"
 # Check the runtime against the SHA-256 list Node publishes for this release before bundling it.
 SUMS="$(curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt")" || { echo "!! could not fetch Node's SHASUMS256.txt" >&2; exit 1; }
 WANT="$(printf '%s\n' "$SUMS" | awk -v f="$NODE_NAME" '$2 == f { print $1 }')"
@@ -71,11 +90,12 @@ if [[ -z "$WANT" || "$WANT" != "$GOT" ]]; then
   echo "!! Node runtime checksum mismatch for $NODE_NAME" >&2
   echo "   expected: ${WANT:-<not listed>}" >&2
   echo "   got:      $GOT" >&2
-  echo "   Delete $NODE_TARBALL and run again." >&2
+  echo "   Run again (and if NODE_TARBALL is set, check that file)." >&2
   exit 1
 fi
 echo "    checksum OK ($GOT)"
-TMPN="$(mktemp -d)"
+TMPN="$WORK/node"
+mkdir -p "$TMPN"
 tar -xf "$NODE_TARBALL" -C "$TMPN"
 NODE_BIN="$(find "$TMPN" -maxdepth 3 -name node -type f | head -1)"
 if [[ -z "$NODE_BIN" ]]; then
@@ -83,7 +103,6 @@ if [[ -z "$NODE_BIN" ]]; then
 fi
 cp "$NODE_BIN" "$RES/runtime/node"
 chmod +x "$RES/runtime/node"
-rm -rf "$TMPN"
 BUNDLED_NODE="$RES/runtime/node"
 echo "    node -> $("$BUNDLED_NODE" --version)"
 
@@ -125,7 +144,7 @@ if [[ -d "$RES/app/node_modules" ]]; then
 fi
 
 echo "==> staging anon binary"
-cp "$ANON_BIN" "$RES/runtime/anon"
+cp "$WORK/anon" "$RES/runtime/anon"            # the copy whose hash was checked above
 chmod +x "$RES/runtime/anon"
 if [[ "$NODE_OS" == darwin ]]; then
   xattr -c "$RES/runtime/anon" 2>/dev/null || true          # drop the download quarantine flag; the app build signs it

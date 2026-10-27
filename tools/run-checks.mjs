@@ -279,5 +279,47 @@ try {
   (m && m[2] === '0') ? pass(`delivery log ${m[1]}/${m[1]}`) : fail('delivery log: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('delivery log — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.stderr?.toString().match(/^\w*Error\b.*$/m)?.[0] || e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n31. Country lookup (libloc reader): longest prefix, IPv4 and IPv6, bad input, damaged or looping databases');
+try {
+  const out = execFileSync('node', [join(root, 'tools/libloc-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`libloc ${m[1]}/${m[1]}`) : fail('libloc: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('libloc — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n32. Answers from other nodes are never unpacked (no decompressor within a peer\u2019s reach), no redirects, size limit (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/peer-client-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`peer client ${m[1]}/${m[1]}`) : fail('peer client: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('peer client — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.stderr?.toString().match(/^\w*Error\b.*$/m)?.[0] || e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n33. "Test connection": where the way to a contact breaks, read from the results (not found, unreachable, refused, clocks apart…)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/contacttest-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`connection test ${m[1]}/${m[1]}`) : fail('connection test: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('connection test — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n34. Waiting for the network: nothing is sent before 100% and a current relay list; the waits end; ready again after a drop');
+try {
+  const out = execFileSync('node', [join(root, 'tools/netready-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`network ready ${m[1]}/${m[1]}`) : fail('network ready: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('network ready — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n35. Looking for our own address through the network: when, what it does about a no (clear-out, send again), and that it never makes things worse (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/selftest-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`self-test ${m[1]}/${m[1]}`) : fail('self-test: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('self-test — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n36. The supervisor stops everything when the Anyone network program stops or port 9050 is held by another program (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/supervisor-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`supervisor ${m[1]}/${m[1]}`) : fail('supervisor: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('supervisor — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

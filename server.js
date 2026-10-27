@@ -17,6 +17,7 @@ const http = require('http');
 const rl    = require('./lib/ratelimit');
 const pow   = require('./lib/pow');
 const stamp = require('./lib/stamp');
+const contactTest = require('./lib/contacttest');
 const deliverylog = require('./lib/deliverylog');   // also names the network's own SOCKS reply codes (see the file)
 const netlock = require('./lib/netlock');
 const peerdata = require('./lib/peerdata');
@@ -111,9 +112,28 @@ function myAddress() {
   catch { return null; }
 }
 
+// Every request to another node has a hard deadline: its timeout, from start to the last byte. axios's own `timeout` only covers the wait
+// for the answer to begin; a node that then sends one byte every few seconds could hold the request open for ever, and with it the
+// online checks and the retry rounds for everyone else. A request cut off this way fails exactly as a timeout does.
+const PEER_DEADLINE_MS = 45000;
+function withDeadline(inst) {
+  inst.interceptors.request.use((cfg) => {
+    if (!cfg.signal) { cfg._deadlineMs = cfg.timeout || PEER_DEADLINE_MS; cfg.signal = AbortSignal.timeout(cfg._deadlineMs); }
+    return cfg;
+  });
+  inst.interceptors.response.use(null, (err) => {
+    const cfg = err && err.config;
+    if (cfg && cfg._deadlineMs && axios.isCancel(err)) {
+      return Promise.reject(new axios.AxiosError(`timeout of ${cfg._deadlineMs}ms exceeded`, 'ECONNABORTED', cfg, err.request));
+    }
+    return Promise.reject(err);
+  });
+  return inst;
+}
+
 function onion() {
   const agent = new SocksProxyAgent(SOCKS);
-  return axios.create({
+  return withDeadline(axios.create({
     httpAgent: agent,
     httpsAgent: agent,
     proxy: false,
@@ -122,7 +142,12 @@ function onion() {
     timeout: 45000,
     maxContentLength: MAX_ENVELOPE,
     maxBodyLength: MAX_ENVELOPE,
-  });
+    // Answers from other nodes are never unpacked: we ask for them plain, and a compressed answer is taken as-is (and then fails the
+    // checks as unreadable). A peer could otherwise feed any bytes it likes to the gzip or Brotli decoder before our own size limit
+    // applies; a bug in a decoder (Node.js CVE-2026-111497, Brotli) would then be within reach of every contact and group member.
+    decompress: false,
+    headers: { 'Accept-Encoding': 'identity' },
+  }));
 }
 
 function noCache(_req, res, next) {
@@ -173,14 +198,20 @@ const PROFILE_FORCE_MS   = 10 * 1000;
 const lastProfileCheck = new Map();
 
 const lastForcedCheck = new Map();
+// Remember when an address was last checked, keeping the maps at 2000 entries: the oldest is forgotten first (a check may then happen a
+// little early for an address nobody has written from in a long while, which costs one request).
+function noteCheck(map, addr, now) {
+  map.delete(addr); map.set(addr, now);
+  if (map.size > 2000) map.delete(map.keys().next().value);
+}
 function maybeRefreshProfile(fromAddr, force = false) {
   const now = Date.now();
   // A notice that their profile changed (a profile bump) is limited only by other notices: limited by the routine check a message
   // just made, a new picture sent right after a message was ignored until the next hourly check.
   const last = (force ? lastForcedCheck : lastProfileCheck).get(fromAddr) || 0;
   if (now - last < (force ? PROFILE_FORCE_MS : PROFILE_REFRESH_MS)) return;
-  lastProfileCheck.set(fromAddr, now);
-  if (force) { lastForcedCheck.set(fromAddr, now); if (lastForcedCheck.size > 2000) lastForcedCheck.clear(); }
+  noteCheck(lastProfileCheck, fromAddr, now);
+  if (force) noteCheck(lastForcedCheck, fromAddr, now);
 
   (async () => {
     try {
@@ -191,7 +222,9 @@ function maybeRefreshProfile(fromAddr, force = false) {
         const { data } = await onion().get(`http://${fromAddr}/api/profile`);
         const { avatar } = peerdata.profile(data);
         const peer = store.getPeers().find(p => p.address === fromAddr);
-        if (peer && (peer.avatar || null) !== avatar) store.upsertPeer({ address: fromAddr, avatar });
+        const pk = peer ? peerdata.prekey(data, peer.ikSigPub) : null;
+        const newKey = pk && pk.ratchetPub !== peer.ratchetPub ? pk : null;
+        if (peer && ((peer.avatar || null) !== avatar || newKey)) store.upsertPeer({ address: fromAddr, avatar, ...(newKey || {}) });
         return;
       }
       const { data } = await onion().get(`http://${fromAddr}/api/profile`);
@@ -200,8 +233,12 @@ function maybeRefreshProfile(fromAddr, force = false) {
       // Re-read after the network call: the contact may have been removed or edited meanwhile.
       const fresh = store.getContacts().find(c => c.address === fromAddr);
       if (!fresh) return; // removed mid-refresh — don't recreate
-      if (newAvatar !== (fresh.avatar || null) || newBio !== (fresh.bio || null) || fresh.name) {
-        store.upsertContact({ address: fromAddr, avatar: newAvatar, name: null, bio: newBio });
+      // Their new signed prekey (replaced every week), taken only with a valid signature by the identity signing key pinned when they
+      // were added: a new chat session with them then starts from their current one.
+      const pk = peerdata.prekey(data, fresh.ikSigPub);
+      const newKey = pk && pk.ratchetPub !== fresh.ratchetPub ? pk : null;
+      if (newAvatar !== (fresh.avatar || null) || newBio !== (fresh.bio || null) || fresh.name || newKey) {
+        store.upsertContact({ address: fromAddr, avatar: newAvatar, name: null, bio: newBio, ...(newKey || {}) });
       }
     } catch {}
   })();
@@ -241,7 +278,7 @@ async function checkPresence(address) {
 
 let _sweeping = false;              // a sweep over many unreachable contacts can outlast the interval: never run two at once
 async function presenceSweep() {
-  if (_sweeping) return;
+  if (_sweeping || !netready.isReady()) return;          // not before the network is ready (lib/netready.js)
   _sweeping = true;
   try { await presenceSweepOnce(); } finally { _sweeping = false; }
 }
@@ -282,13 +319,17 @@ pub.use((req, res, next) => {
 pub.use(noCache);
 // Only a message (/api/inbox) can be large: headroom over the 8 MB envelope cap. Every other request on this port is a few bytes, and
 // anyone who knows the address can send them, so a big body there is refused before it is read.
-const pubInboxJson = express.json({ limit: '10mb' }), pubSmallJson = express.json({ limit: '4kb' });
+// inflate: false everywhere: a body that claims to be compressed is refused (415), never unpacked. Nobody here sends one (the window and
+// other nodes send plain JSON), and a bug in a decompressor (body-parser <1.20.9, trailing bytes after a compressed body) must not be reachable.
+const pubInboxJson = express.json({ limit: '10mb', inflate: false }), pubSmallJson = express.json({ limit: '4kb', inflate: false });
 pub.use((req, res, next) => (req.path === '/api/inbox' ? pubInboxJson : pubSmallJson)(req, res, next));
 
 pub.get('/api/profile', (_req, res) => {
   const id = store.getIdentity();
   if (!id) return res.status(503).json({ error: 'identity not initialised yet' });
-  res.json({ name: id.name || null, avatar: id.avatar || null, bio: id.bio || null });
+  // The current signed prekey too (it is public, as at /api/identity, but this hands out no one-time key): the window replaces it every
+  // week, and contacts learn the new one here when they next refresh our profile.
+  res.json({ name: id.name || null, avatar: id.avatar || null, bio: id.bio || null, ratchetPub: id.ratchetPub || null, spkSig: id.spkSig || null });
 });
 
 // Anyone can send this notice, claiming any address, so it is limited. Only a notice that claims one of our contacts or group members
@@ -401,6 +442,26 @@ pub.post('/api/inbox', (req, res) => {
     res.set('Retry-After', String(rl.retryAfter(reason, rlKey)));
     return res.status(429).json({ error: 'rate limited' });
   }
+  // Proof of work: from anyone who isn't a contact while messages from non-contacts are arriving unusually fast (a flood), or always if
+  // turned on. Normally nobody pays it, so group photos and first messages go out at once.
+  // Asked for here, before any check whose answer depends on the address the message claims (blocked, a contact's key, a member's): a
+  // sender who hasn't paid gets the same 402 whoever they claim to be, so the answers can't be used to find out who our contacts are.
+  // A real contact is never asked (their stamp proves them, and only they and we have its key).
+  const powAlways = !!settings.powAlways;
+  if (!known && (powAlways || rl.pressure({ ip, from }))) {
+    const proof = env.pow;
+    const ok = proof && pow.verifyProof({
+      challenge: proof.c,
+      from,
+      ct: env.ct,
+      nonce: proof.n,
+    });
+    if (!ok) {
+      const ch = pow.currentChallenge();
+      return res.status(402).json({ error: 'proof of work required', challenge: ch.challenge, bits: ch.bits });
+    }
+  }
+
   if (store.isBlocked(from)) {
     store.incrementBlocked();
     return res.json({ ok: true });
@@ -440,23 +501,6 @@ pub.post('/api/inbox', (req, res) => {
   if (pinned && env.x3dh && pinned.ecdhPub && env.x3dh.ik !== pinned.ecdhPub) {
     store.incrementBlocked();
     return res.json({ ok: true });
-  }
-
-  // Proof of work: from anyone who isn't a contact while messages from non-contacts are arriving unusually fast (a flood), or always if
-  // turned on. Normally nobody pays it, so group photos and first messages go out at once.
-  const powAlways = !!settings.powAlways;
-  if (!known && (powAlways || rl.pressure({ ip, from }))) {
-    const proof = env.pow;
-    const ok = proof && pow.verifyProof({
-      challenge: proof.c,
-      from,
-      ct: env.ct,
-      nonce: proof.n,
-    });
-    if (!ok) {
-      const ch = pow.currentChallenge();
-      return res.status(402).json({ error: 'proof of work required', challenge: ch.challenge, bits: ch.bits });
-    }
   }
 
   // Recorded only now that it is accepted (see store.seenEnvelope); still checked, as two copies may have raced through the checks above.
@@ -540,7 +584,7 @@ ui.use((req, res, next) => {
 ui.use(noCache);
 // A restore carries a whole backup (public/backup.js MAX_FILE_BYTES: 20 MB at most, less once decrypted): its own, larger limit, so
 // any backup the window can open can also be put in place. Everything else keeps the usual one.
-const uiJson = express.json({ limit: '10mb' }), restoreJson = express.json({ limit: '32mb' });
+const uiJson = express.json({ limit: '10mb', inflate: false }), restoreJson = express.json({ limit: '32mb', inflate: false });
 ui.use((req, res, next) => (req.path === '/api/restore' ? restoreJson : uiJson)(req, res, next));
 ui.use(express.static(path.join(__dirname, 'public'), {
   etag: false,
@@ -753,7 +797,7 @@ ui.get('/api/network', (_req, res) => {
   res.json({ socksPort: SOCKS_PORT, dynamicPort: p.dynamicPort, exitCountry: p.exitCountry });
 });
 
-ui.post('/api/network/dynamic-port', express.json(), (req, res) => {
+ui.post('/api/network/dynamic-port', express.json({ inflate: false }), (req, res) => {
   const enabled = req.body && req.body.enabled;
   if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'invalid' });
   const p = netprefs.save(DATA_DIR, { ...netprefs.load(DATA_DIR), dynamicPort: enabled });
@@ -766,7 +810,7 @@ ui.get('/api/exit/countries', async (_req, res) => {
 });
 
 let lastExitChange = 0;
-ui.post('/api/exit', express.json(), async (req, res) => {
+ui.post('/api/exit', express.json({ inflate: false }), async (req, res) => {
   if (Date.now() - lastExitChange < 1500) return res.status(429).json({ error: 'too_many_requests' });
   lastExitChange = Date.now();
   const cc = req.body ? req.body.country : null;
@@ -779,8 +823,44 @@ ui.post('/api/exit', express.json(), async (req, res) => {
 });
 
 ui.get('/api/hs/health', async (_req, res) => {
-  try { res.json(await circuits.getServiceHealth(myAddress())); }
+  try { res.json({ ...(await circuits.getServiceHealth(myAddress())), selfTest: selfTest.status(), network: netready.status() }); }
   catch (e) { res.status(503).json({ error: e.message }); }
+});
+
+// "Test connection" (conversation menu): finds out where the way to one contact breaks, and reports it as codes the window words.
+// Makes one small request to their app, the one the online check makes; nothing is sent to them but that. One test at a time per contact.
+const _tests = new Map();
+ui.post('/api/contact-test/:addr', async (req, res) => {
+  const addr = cleanAddr(req.params.addr);
+  if (!isValidAddr(addr)) return res.status(400).json({ error: 'invalid address' });
+  if (!store.getContacts().some((c) => c.address === addr)) return res.status(404).json({ error: 'not a contact' });
+  let run = _tests.get(addr);
+  if (!run) {
+    run = (async () => {
+      // Our own address is looked up at the same time (unless it was, a moment ago): if it can't be found either, the fault is here.
+      const selfRun = selfTest.runNow().catch(() => null);
+      const own = await circuits.getServiceHealth(myAddress()).catch(() => ({ detail: 'unknown' }));
+      const probe = { ok: false };
+      const sentAt = Date.now();
+      try {
+        const r = await onion().get(`http://${addr}/api/profile`, { timeout: 45000 });
+        probe.ok = true;
+        probe.skewMs = contactTest.clockSkew(r.headers && r.headers.date, sentAt, Date.now());
+      } catch (e) {
+        probe.error = contactTest.readProbeError(e);
+        if (e.response) probe.skewMs = contactTest.clockSkew(e.response.headers && e.response.headers.date, sentAt, Date.now());
+      }
+      if (probe.ok) {
+        markSeen(addr);                  // they answered: they are reachable, so whatever waits for them goes now
+        if (outbox.countFor(addr)) setImmediate(() => outbox.flushTo(addr).catch(() => {}));
+      }
+      await selfRun;
+      return contactTest.summarize({ own, probe, queue: outbox.stateFor(addr), self: selfTest.status() });
+    })().finally(() => _tests.delete(addr));
+    _tests.set(addr, run);
+  }
+  try { res.json(await run); }
+  catch (e) { res.status(503).json({ error: 'failed' }); }
 });
 
 ui.post('/api/circuit/rebuild-contact/:addr', async (req, res) => {
@@ -1038,6 +1118,37 @@ function forgetOnionLookups(manual = false) {
   _lastForget = now;
   ctrlCmd('SIGNAL NEWNYM').catch(() => {});
 }
+// Whether the network is ready to look addresses up (lib/netready.js). Sending, the online checks and the "back online" notices wait for
+// it; when it becomes ready the network's lookup memory is cleared once and whatever waits goes. Only when the supervisor (start.js)
+// asks for it: a backend run on its own (tests, `node server.js`) has no network program of its own to wait for.
+const netreadyLib = require('./lib/netready');
+const netready = netreadyLib.create({
+  enabled: process.env.ANONCHAT_WAIT_NETWORK === '1',
+  bootstrapPct: async () => (await Promise.race([bootstrapPct(), new Promise((r) => setTimeout(() => r(null), 1500))])) ?? knownBootstrap(),
+  consensusTimes: () => netreadyLib.readConsensusTimes(ctrlCmd),
+  onReady: (why) => {
+    console.log(`[network] ready (${why})`);
+    deliveryLog.note('the network is ready; sending what waits');
+    forgetOnionLookups(true);
+    setTimeout(() => outbox.kick(), 1500);
+    setTimeout(() => presenceSweep().catch(() => {}), 5000);
+  },
+});
+setInterval(() => { netready.check().catch(() => {}); }, 3000);
+netready.check().catch(() => {});
+
+// Can our own address be found through the network? (lib/selftest.js)
+const selfTest = require('./lib/selftest').create({
+  probe: () => onion().get(`http://${myAddress()}/api/profile`, { timeout: 60000 }),
+  isPublished: () => circuits.isServicePublished(myAddress()),
+  clearLookups: async () => { forgetOnionLookups(true); },
+  republish: () => circuits.republishService(myAddress()),
+  isReady: () => netready.isReady() && !!myAddress(),
+  log: (m) => deliveryLog.note(m),
+  timing: process.env.SELFTEST_FAST === '1' ? { settleMs: 500, okEveryMs: 4000, badEveryMs: 2000, againMs: 1500, republishEveryMs: 5000 } : {},    // the tests
+});
+setInterval(() => { selfTest.tick().catch(() => {}); }, process.env.SELFTEST_FAST === '1' ? 700 : 15000);
+
 // The route to a contact can die without either side noticing (their connection dropped, their app was closed): every new try is then
 // sent down it and fails, while everyone else is reached. After a failed try, the route the last try used is closed, so the next one
 // builds a fresh route (what "Rebuild network path" does by hand). At most once a minute per contact.
@@ -1070,6 +1181,7 @@ function restampQueued(envelope, from, to) {
 async function announceBack() {
   const waitMax = envMs('ANNOUNCE_MAX_WAIT_MS', 5 * 60 * 1000), settle = envMs('ANNOUNCE_SETTLE_MS', 20000);
   const t0 = Date.now();
+  while (!netready.isReady() && Date.now() - t0 < 10 * 60 * 1000) await new Promise((r) => setTimeout(r, 2000));   // not before the network is ready
   for (;;) {                                      // published (or, if the control port can't say, after waiting the longest)
     let published = false;
     try { published = await circuits.isServicePublished(myAddress()); } catch {}
@@ -1102,7 +1214,7 @@ function initOutbox() {
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
   });
   // After the listeners: messages that ran out of time while the app was closed are reported too.
-  outbox.init({ onion, pow, myAddress, onRetryFail: refreshPeerDescriptor, stamp: restampQueued });
+  outbox.init({ onion, pow, myAddress, onRetryFail: refreshPeerDescriptor, stamp: restampQueued, ready: () => netready.isReady() });
 }
 
 ui.post('/api/send', async (req, res) => {

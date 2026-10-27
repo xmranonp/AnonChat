@@ -27,7 +27,7 @@ function extract(name) {
   throw new Error('unbalanced: ' + name);
 }
 const FNS = ['identityMismatch', 'sessionMatchesPin', 'discardSession', 'pinnedSession', 'ensureSession', 'shouldAdoptResponder', 'handleInbound',
-  'decodeFrame', '_processEnvelopeInner',
+  'decodeFrame', '_processEnvelopeInner', 'spkCandidates', 'respondWithSpk',
   'requestName', 'dropRequestBlobs', 'forgetRequest', 'expireRequests', 'isGroupFrameFromMember', 'addToRequest',
   'absorbRequestsOfContacts', 'acceptRequest', 'deleteRequest', 'blockRequest',
   'richSendAllowed', 'shownError', 'errorText', 'textOnlyError', 'deliver', 'withSessionLock', 'incomingId',
@@ -131,7 +131,7 @@ async function makeParty(name, address) {
     applyReaction: () => {}, selected: null, selectedGroup: null, sessionUrls: new Map(), sessionBlobs: new Map(),
     peers: P.peers, _peerFetches: new Map(), groups: P.groups, heldGroupFrames: [], HELD_GROUP_TTL: 10 * 60 * 1000, MAX_HELD_GROUP: 100,
     MEDIA_KINDS: new Set(['image', 'video', 'audio', 'voice', 'file']), MAX_EMOJI_LEN: constOf('MAX_EMOJI_LEN'), FRAME_KIND_RE: constOf('FRAME_KIND_RE'),
-    THUMB_RE: constOf('THUMB_RE'), MEMBER_ADDR_RE: constOf('MEMBER_ADDR_RE'), OPK_USE_MS: 7 * 24 * 3600 * 1000,
+    THUMB_RE: constOf('THUMB_RE'), OFFLINE_TTL_DEFAULT: constOf('OFFLINE_TTL_DEFAULT'), MEMBER_ADDR_RE: constOf('MEMBER_ADDR_RE'), OPK_USE_MS: 7 * 24 * 3600 * 1000,
     offerNewSession: (a, force, why) => { (P.offers = P.offers || []).push({ a, why }); },
     tellNowARequest: (a) => { (P.told = P.told || []).push(a); },
     groupWaiting: [], _groupWaitBusy: new Set(), GROUP_WAIT_MS: 24 * 3600 * 1000, GROUP_WAIT_MAX_BYTES: 64 * 1024 * 1024, GROUP_WAIT_KEY: 'gw', b64,

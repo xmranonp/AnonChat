@@ -50,6 +50,12 @@ console.log('Backup file');
 ok('a payload with everything checks clean', B.checkPayload(payload).length === 0, B.checkPayload(payload));
 ok('one-time prekeys and presence are left out', !('opkId' in payload.contacts[0]) && !('online' in payload.contacts[0]));
 ok('contacts’ and group members’ pictures are left out', !('avatar' in payload.contacts[0]) && !('avatar' in payload.peers[0]));
+{
+  const withOld = B.buildPayload({ address: key.address, hs: { secret: 'a', public: 'b', hostname: key.address },
+    identity: { ikPriv: ik.priv, ikPub: ik.pub, spk: { ...spk, created: 5, old: [{ ...(await jwkPair(EC)), retired: 4 }] }, ikSig: sig } });
+  ok('retired signed prekeys are left out: only the current one goes in', JSON.stringify(Object.keys(withOld.identity.spk).sort()) === '["created","priv","pub"]'
+    && withOld.identity.spk.pub === spk.pub, JSON.stringify(Object.keys(withOld.identity.spk)));
+}
 ok('only the three settings go in', JSON.stringify(Object.keys(payload.settings).sort()) === '["acceptRequests","powAlways","readReceipts"]');
 const PW = 'correct horse battery staple';
 const file = await B.encryptBackup(payload, PW, { iterations: 100_000 });

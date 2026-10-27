@@ -1,0 +1,13 @@
+# The Anyone network program (anon) builds that AnonChat may bundle. prepare-resources.sh and prepare-resources.ps1 refuse any anon
+# binary whose SHA-256 is not listed here, so a different version or a modified file can't end up in an installer.
+#
+# To add one (once per release and platform):
+#   1. Download the release from https://github.com/anyone-protocol/ator-protocol/releases and check the downloaded archive or
+#      package against the SHA-256 digest shown for it on the release page.
+#   2. Run the prepare script with ANON_BIN pointing at the anon binary from it. It stops and prints the binary's SHA-256 and the
+#      line to add.
+#   3. Add that line below and commit it.
+#
+# Format: <sha256 of the anon binary>  <platform>  <anon version>
+
+0e8304df465cc89012b4b1dd49dbab39428425454fe2a69abcd780dbc57cfc2c  linux-x64  anon v0.4.10.4-beta

@@ -21,12 +21,28 @@ const MIN_PASSPHRASE = 12;
 function file(dir) { return path.join(dir, 'keystore.json'); }
 
 function load(dir) {
+  try { for (const n of fs.readdirSync(dir)) if (/^keystore\.json\..*\.tmp$/.test(n)) fs.unlinkSync(path.join(dir, n)); } catch {}   // left by an interrupted save
   let raw;
   try { raw = fs.readFileSync(file(dir), 'utf8'); }
   catch (e) { if (e.code === 'ENOENT') return null; throw e; }
   const ks = JSON.parse(raw);                         // a damaged keystore throws: never silently replaced by a new key
   if (!ks || ks.v !== 1 || (ks.mode !== 'os' && ks.mode !== 'passphrase')) throw new Error('unknown keystore format');
+  checkShape(ks);
   return ks;
+}
+// A keystore whose fields can't be used (a cut-off or edited file that is still valid JSON) is reported as damaged here, at load, so the
+// start screen says so: scrypt would otherwise throw in the middle of unlocking and leave the screen on "Unlocking…" for good.
+function b64len(v, n) { return typeof v === 'string' && Buffer.from(v, 'base64').length === n; }
+function checkShape(ks) {
+  if (ks.mode === 'os') {
+    if (typeof ks.wrapped !== 'string' || !ks.wrapped) throw new Error('keystore damaged: no wrapped key');
+    return;
+  }
+  const k = ks.kdf;
+  const pow2 = (n) => Number.isInteger(n) && n >= 1 << 10 && n <= 1 << 20 && (n & (n - 1)) === 0;
+  if (!k || k.name !== 'scrypt' || !pow2(k.N) || !Number.isInteger(k.r) || k.r < 1 || k.r > 32 || !Number.isInteger(k.p) || k.p < 1 || k.p > 16
+      || 128 * k.N * k.r > SCRYPT.maxmem) throw new Error('keystore damaged: unusable key settings');
+  if (!b64len(k.salt, 16) || !b64len(ks.iv, 12) || !b64len(ks.tag, 16) || !b64len(ks.ct, 32)) throw new Error('keystore damaged: bad fields');
 }
 function save(dir, ks) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

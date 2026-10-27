@@ -109,7 +109,9 @@ export function buildPayload({ address, hs, identity, contacts, peers, groups, b
   return {
     format: FORMAT, v: VERSION, createdAt: now, address,
     hs: { secret: hs.secret, public: hs.public, hostname: hs.hostname },
-    identity: { ikPriv: identity.ikPriv, ikPub: identity.ikPub, spk: identity.spk, ikSig: identity.ikSig },
+    // Only the current signed prekey: retired ones (kept a while on this computer for first messages written with them) stay out, so a
+    // backup can't read first messages from before it was made, beyond the current week's.
+    identity: { ikPriv: identity.ikPriv, ikPub: identity.ikPub, spk: { priv: identity.spk.priv, pub: identity.spk.pub, ...(Number.isFinite(identity.spk.created) ? { created: identity.spk.created } : {}) }, ikSig: identity.ikSig },
     contacts: (contacts || []).map(strip),
     peers: (peers || []).map(strip),
     groups: groups || [],

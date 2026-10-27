@@ -232,6 +232,21 @@ const el = (t, p = {}, ...k) => {
 const concat = (...a) => { const t = a.reduce((n, x) => n + x.length, 0); const o = new Uint8Array(t); let f = 0; for (const x of a) { o.set(x, f); f += x.length; } return o; };
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
+// Anything that slips past every handler (a bug) is noted instead of vanishing: the last 20, in memory only (never stored or sent
+// anywhere), with the console line a developer would look for. Nothing is shown to the person, and the page keeps running.
+const pageErrors = [];
+function notePageError(kind, e) {
+  try {
+    const msg = String((e && e.message) || e || 'unknown').slice(0, 300);
+    pageErrors.push({ kind, message: msg, stack: String((e && e.stack) || '').split('\n').slice(0, 6).join('\n'), ts: Date.now() });
+    if (pageErrors.length > 20) pageErrors.shift();
+    console.error('[AnonChat] ' + kind + ': ' + msg);
+  } catch {}
+}
+window.addEventListener('error', (ev) => notePageError('error', ev.error || ev.message));
+window.addEventListener('unhandledrejection', (ev) => notePageError('unhandled promise rejection', ev.reason));
+window.__anonchatErrors = () => pageErrors.slice();   // for a bug report or a test
+
 // Names of the encrypted fields. A chat's history and session are stored under an opaque tag (a keyed hash of the contact address or
 // group id), never the address itself: the list of field names would otherwise give away who you talk to without any decryption.
 // The tag key and the tag → address map live in the encrypted preferences (prefs.names), loaded right after unlock.
@@ -308,6 +323,7 @@ const MENU_ICONS = {
   timer: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/></svg>',
   clock: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>',
   path:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><polyline points="21 3 21 9 15 9"/></svg>',
+  test:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
   trash: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
   leave: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
   back:  '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>',
@@ -859,7 +875,7 @@ async function deliverToGroup(group, frameBytes) {
     try { holder = await ensurePeer(m.address); }
     catch (e) { if (e.code === 'IK_MISMATCH') throw e; keepForMember(group.id, m.address, frameBytes); return 'kept'; }
     await sendGroupWaiting(m.address);   // anything older for them goes first
-    return deliver(holder, frameBytes);
+    return deliver(holder, frameBytes, { offlineTtl: OFFLINE_TTL_DEFAULT });   // waits as long as a one-to-one message does by default (24 h), not the queue's 7 days
   }));
   return results.filter(r => r.status === 'rejected').length;
 }
@@ -885,7 +901,7 @@ async function sendGroupWaiting(to = null) {
     _groupWaitBusy.add(addr);
     try {
       for (const w of groupWaiting.filter((x) => x.to === addr)) {
-        try { await deliver(holder, b64.dec(w.frame)); }
+        try { await deliver(holder, b64.dec(w.frame), { offlineTtl: OFFLINE_TTL_DEFAULT }); }
         catch (e) { if (!/delivery failed/i.test(e.message || '')) break; }   // refused outright: dropped; anything else: try again later
         groupWaiting = groupWaiting.filter((x) => x !== w);
         saveGroupWaiting();
@@ -1377,10 +1393,7 @@ async function ensureIdentity() {
     ikPrivJwk = await crypto.subtle.exportKey('jwk', kp.privateKey);
     ikPub = b64.enc(await crypto.subtle.exportKey('raw', kp.publicKey));
   }
-  if (!spk) {
-    const kp = await crypto.subtle.generateKey(EC, true, ['deriveBits']);
-    spk = { priv: await crypto.subtle.exportKey('jwk', kp.privateKey), pub: b64.enc(await crypto.subtle.exportKey('raw', kp.publicKey)) };
-  }
+  if (!spk) spk = { ...(await newSpkPair()), created: Date.now(), old: [] };
   // A separate ECDSA identity-signing key signs the SPK, so a peer can verify the prekey is ours.
   if (!ikSig) ikSig = await Ratchet.genSigningKey();
   spkSig = await Ratchet.signSPK(ikSig.priv, spk.pub);
@@ -1389,10 +1402,69 @@ async function ensureIdentity() {
   }
   myAvatar = prefs.avatar || null;
   myBio = prefs.bio || null;
+  await publishIdentity();
+}
+async function publishIdentity() {
   await fetch('/api/identity', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ecdhPub: ikPub, ratchetPub: spk.pub, ikSigPub: ikSig.pub, spkSig, avatar: myAvatar, bio: myBio }),
   });
+}
+
+// The signed prekey is replaced every week. A first message to us that is sent before we reply (a message request, or the first message
+// of a new session) depends on it and on our long-term key only, so replacing it and then deleting the old private half limits what a
+// stolen copy of this computer's keys could read later: only first messages from the last SPK_KEEP_MS, not every one ever sent.
+// Retired ones are kept that long because a contact's app may still hold an older one (it learns the new one from our profile, see
+// server.js maybeRefreshProfile, but only when it next reaches us); a first message is read with whichever one its sender used.
+const SPK_ROTATE_MS = 7 * 24 * 3600 * 1000, SPK_KEEP_MS = 60 * 24 * 3600 * 1000, SPK_KEEP_MAX = 12;
+async function newSpkPair() {
+  const kp = await crypto.subtle.generateKey(EC, true, ['deriveBits']);
+  return { priv: await crypto.subtle.exportKey('jwk', kp.privateKey), pub: b64.enc(await crypto.subtle.exportKey('raw', kp.publicKey)) };
+}
+// Our signed prekeys, the current one first: only the key pair of each (never the list of retired ones) goes into a session.
+function spkCandidates() {
+  return [spk, ...((spk && Array.isArray(spk.old)) ? spk.old : [])].filter((k) => k && k.priv && k.pub).map((k) => ({ priv: k.priv, pub: k.pub }));
+}
+let _spkRotating = false;
+async function rotateSpkIfDue(now = Date.now()) {
+  if (!spk || !ikSig || !pinKey || _spkRotating) return false;
+  _spkRotating = true;
+  try {
+    const before = JSON.stringify(spk);
+    const old = (Array.isArray(spk.old) ? spk.old : []).filter((k) => k && now - (k.retired || 0) < SPK_KEEP_MS);
+    // An installation from before rotation existed: its prekey is counted from today.
+    let next = { priv: spk.priv, pub: spk.pub, created: Number.isFinite(spk.created) ? spk.created : now, old };
+    const due = now - next.created >= SPK_ROTATE_MS;
+    if (due) next = { ...(await newSpkPair()), created: now, old: [{ priv: spk.priv, pub: spk.pub, retired: now }, ...old].slice(0, SPK_KEEP_MAX) };
+    if (JSON.stringify(next) === before) return false;
+    const prevSpk = spk, prevSig = spkSig;
+    spk = next;
+    if (due) spkSig = await Ratchet.signSPK(ikSig.priv, spk.pub);
+    try { await pinSaveKeys(pinKey); }
+    catch (e) { spk = prevSpk; spkSig = prevSig; throw e; }          // nothing published that isn't saved
+    if (due) {
+      await publishIdentity();
+      fetch('/api/profile/broadcast', { method: 'POST' }).catch(() => {});   // contacts fetch our profile, which carries the new prekey
+    }
+    return due;
+  } finally { _spkRotating = false; }
+}
+// For a test (tests/browser/spk_rotation.py): rotate as if `days` had passed, and read what is kept. Exposes nothing a script running in
+// this page couldn't reach anyway.
+window.__anonchatSpk = { rotate: (days) => rotateSpkIfDue(Date.now() + days * 24 * 3600 * 1000), count: () => spkCandidates().length, pub: () => spk && spk.pub };
+// The responder side of a handshake, built with whichever of our signed prekeys the sender used: the first whose session reads this
+// message (a handshake doesn't say which one). With only the current one there is nothing to try.
+async function respondWithSpk(x3dh, opkPriv, meta, header, ct) {
+  const keys = spkCandidates();
+  let first = null;
+  for (const k of keys) {
+    const sk = await Ratchet.x3dhResponder(k.priv, ikPrivJwk, x3dh.ik, x3dh.ek, opkPriv);
+    const s = Ratchet.initResponder(sk, k, meta);
+    if (keys.length === 1) return s;
+    if (!first) first = s;
+    try { await Ratchet.ratchetDecrypt(clone(s), header, ct); return s; } catch {}
+  }
+  return first;
 }
 
 fetch('/api/version').then(r => r.json()).then(v => {
@@ -1540,6 +1612,7 @@ function initLang() {
     window.electron?.setLanguage?.(getLang(), {
       'link.title': t('link.title'), 'link.message': t('link.message'), 'link.detail': t('link.detail'),
       'link.open': t('link.open'), 'link.cancel': t('nav.cancel'),
+      'stopped.title': t('stopped.title'), 'stopped.anon': t('stopped.anon'), 'stopped.other': t('stopped.other'),
     });
   } catch {}
 }
@@ -2936,6 +3009,7 @@ async function handleInbound(env) {
   };
   // Ours unanswered and theirs wins the tie-break (both wrote first): what we wrote on ours can't be read on their side.
   const lostTie = !!contact && !!s && s.role === 'initiator' && !s.confirmed && !!s.pendingX3DH;
+  const header = { dh: env.dh, pn: env.pn || 0, n: env.n };
   let abandoned = null;
   if (env.x3dh && !alreadyAdopted && !opkGone && shouldAdoptResponder(s, env.x3dh)) {
     if (lostTie) abandoned = { ek: s.pendingX3DH.ek, since: s.startedAt || 0 };
@@ -2947,9 +3021,8 @@ async function handleInbound(env) {
         consumedOpkId = env.x3dh.opkId;
       }
     }
-    const sk = await Ratchet.x3dhResponder(spk.priv, ikPrivJwk, env.x3dh.ik, env.x3dh.ek, opkPriv);
     const verified = !!pin && pin.ecdhPub === env.x3dh.ik;
-    s = Ratchet.initResponder(sk, spk, { verified, remoteIk: env.x3dh.ik });   // remoteIk: checked against the pin if this stranger is added later
+    s = await respondWithSpk(env.x3dh, opkPriv, { verified, remoteIk: env.x3dh.ik }, header, env.ct);   // remoteIk: checked against the pin if this stranger is added later
     s.adoptedEk = env.x3dh.ek;   // remember so a repeat handshake won't re-adopt
     if (seenEks.length) s.pastEks = seenEks.slice(-20);
     adoptedNow = true;
@@ -2959,7 +3032,6 @@ async function handleInbound(env) {
 
   // Decrypt on a clone and commit only on success, so a bad message can't desync the session.
   // There is deliberately no re-handshake-on-decrypt-failure path: the deterministic tie-break above is the only way a responder session is adopted. That is what stops simultaneous initiation (first messages crossing on fresh installs) from deadlocking; adopt-on-failure would flip both sides into responders on mismatched roots.
-  const header = { dh: env.dh, pn: env.pn || 0, n: env.n };
   let work = clone(s);
   let pt, resetNow = false;
   try { pt = await Ratchet.ratchetDecrypt(work, header, env.ct); }
@@ -2983,8 +3055,7 @@ async function handleInbound(env) {
     if (!(pinnedHandshake && (established || waitingOnOurs)) && !formerContact) throw e;
     let opkPriv = null;
     if (env.x3dh.opkId) { const opks = loadOPKs(); if (opks[env.x3dh.opkId]?.k) { opkPriv = opks[env.x3dh.opkId].k; consumedOpkId = env.x3dh.opkId; } }
-    const sk = await Ratchet.x3dhResponder(spk.priv, ikPrivJwk, env.x3dh.ik, env.x3dh.ek, opkPriv);
-    const fresh = Ratchet.initResponder(sk, spk, { verified: !!pin, remoteIk: env.x3dh.ik });
+    const fresh = await respondWithSpk(env.x3dh, opkPriv, { verified: !!pin, remoteIk: env.x3dh.ik }, header, env.ct);
     fresh.adoptedEk = env.x3dh.ek;
     fresh.pastEks = seenEks.slice(-20);
     work = clone(fresh);
@@ -3377,15 +3448,28 @@ async function reconcileWaiting() {
     }
   }
 }
-// The dot beside the name: connected (pulsing cyan) / connecting (amber) / offline (red).
-let _wsOnline = true, _netReady = null, _netTimer = 0, _dotTipBound = false;
+// The dot beside the name, in one look: can people reach me?
+//   cyan, pulsing  the network is ready, our address is reachable (published, introduction points open) and our own lookup finds it
+//   amber          the network is still starting, or our address is not reachable yet, or our own lookup of it failed (the app is repairing it)
+//   red            the window has lost its link to the app
+// Only what is confirmed turns it amber: "not checked yet", "checking" and "could not check" leave it as it is.
+let _wsOnline = true, _netReady = null, _reach = null, _netTimer = 0, _dotTipBound = false;
+function netDotState() {
+  if (!_wsOnline) return ['offline', 'net.offline'];
+  if (!_netReady) return ['amber', 'net.connecting'];
+  if (_reach) {
+    if (['not-published', 'establishing', 'published-no-intro', 'no-address'].includes(_reach.detail)) return ['amber', 'net.publishing'];
+    if (_reach.self === 'not-findable') return ['amber', 'net.notfindable'];
+  }
+  return ['online', 'net.online'];
+}
 function paintNetDot() {
   const dot = $('#ws-dot'); if (!dot) return;
-  const st = !_wsOnline ? 'offline' : (_netReady ? 'online' : 'connecting');
+  const [st, key] = netDotState();
   dot.classList.toggle('online', st === 'online');
-  dot.classList.toggle('connecting', st === 'connecting');
+  dot.classList.toggle('connecting', st === 'amber');
   dot.classList.toggle('offline', st === 'offline');
-  dot._tipText = t('net.' + st);
+  dot._tipText = t(key);
   dot.setAttribute('aria-label', dot._tipText); dot.removeAttribute('aria-hidden'); dot.setAttribute('role', 'img');
   if (!_dotTipBound) { _dotTipBound = true; dot.addEventListener('mouseenter', () => showTip(dot, dot._tipText)); dot.addEventListener('mouseleave', hideTip); }
 }
@@ -3394,10 +3478,19 @@ async function pollNet() {
   let ready = false;
   try { const w = await fetch('/api/whoami').then((r) => r.json()); ready = w.network === 'ready'; _wsOnline = true; }
   catch { ready = false; _wsOnline = false; }
-  _netReady = ready; paintNetDot();
+  _netReady = ready;
+  // Whether our address is reachable and findable (the same answer as the Status tab). No answer: nothing is known, so nothing is claimed.
+  _reach = null;
+  if (ready) {
+    try {
+      const r = await fetch('/api/hs/health');
+      if (r.ok) { const h = await r.json(); _reach = { detail: h.detail || 'unknown', self: (h.selfTest && h.selfTest.state) || 'idle' }; }
+    } catch {}
+  }
+  paintNetDot();
   _netTimer = setTimeout(pollNet, ready ? 10000 : 3000);
 }
-function setWsStatus(online) { _wsOnline = online; if (!online) _netReady = false; paintNetDot(); if (online) pollNet(); }
+function setWsStatus(online) { _wsOnline = online; if (!online) { _netReady = false; _reach = null; } paintNetDot(); if (online) pollNet(); }
 let _wsEverConnected = false;
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -3788,6 +3881,7 @@ function renderConversation() {
         toast(t('offttl.set', { time: offlineTtlLabel(secs) }));
       } })) },
     { label: t('circuit.rebuild'), icon: MENU_ICONS.path, desc: t('menu.d.rebuild'), run: rebuildPath },
+    { label: t('ctest.menu'), icon: MENU_ICONS.test, desc: t('menu.d.ctest'), run: () => openContactTest(c) },
     pinItem(c.address, () => renderContacts()),
     { sep: true },
     { label: t('conv.clearAll'), icon: MENU_ICONS.trash, danger: true, desc: t('menu.d.clear'), run: async () => { if (await askConfirm(t('conv.clearDM', { name: c.petname }))) clearThread(c.address); } },
@@ -4650,6 +4744,70 @@ function dlBtn(msgId, filename, kind = 'file') {
   return b;
 }
 function toast(msg, ms = 3200) { const node = $('#toast'); node.textContent = msg; node.classList.add('show'); clearTimeout(toast._t); toast._t = setTimeout(() => node.classList.remove('show'), ms); }
+
+// "Test connection" for one contact (conversation menu): asks the backend where the way to them breaks (POST /api/contact-test, which
+// returns codes only) and shows each step with a plain sentence about what to do. The wording is all here, in the person's language.
+function openContactTest(c) {
+  $('#ctest-overlay')?.remove();
+  const overlay = el('div', { id: 'ctest-overlay', className: 'confirm-overlay' });
+  const dialog = el('div', { className: 'confirm-dialog ctest-dialog', role: 'dialog' });
+  dialog.setAttribute('aria-modal', 'true');
+  const title = el('h3', { id: 'ctest-title', className: 'ctest-title', textContent: t('ctest.title', { name: c.petname }) });
+  dialog.setAttribute('aria-labelledby', 'ctest-title');
+  const rows = el('div', { className: 'ctest-rows' });
+  rows.setAttribute('aria-live', 'polite');
+  const verdict = el('p', { className: 'ctest-verdict' });
+  const again = el('button', { type: 'button', className: 'confirm-cancel', textContent: t('ctest.again') });
+  const close = el('button', { type: 'button', className: 'confirm-cancel ctest-close', textContent: t('nav.close') });
+  dialog.append(title, rows, verdict, el('div', { className: 'confirm-actions' }, again, close));
+  overlay.append(dialog);
+  document.body.append(overlay);
+
+  let gone = false, token = 0;
+  const shut = () => { gone = true; document.removeEventListener('keydown', onKey, true); overlay.remove(); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); shut(); } };
+  document.addEventListener('keydown', onKey, true);
+  close.onclick = shut;
+  overlay.onclick = (e) => { if (e.target === overlay) shut(); };
+
+  const GLYPH = { ok: '\u2713', fail: '\u2717', wait: '\u2026', warn: '!', skip: '\u2013', info: '\u00b7' };
+  const row = (state, label, value) => {
+    const g = el('span', { className: 'ctest-glyph', textContent: GLYPH[state] || GLYPH.info });
+    g.setAttribute('aria-hidden', 'true');
+    rows.append(el('div', { className: 'ctest-row ' + state }, g, el('span', { className: 'ctest-label', textContent: label }), el('span', { className: 'ctest-value', textContent: value })));
+  };
+  const show = (r) => {
+    rows.textContent = '';
+    row(r.own.state, t('ctest.own'), r.own.state === 'ok' ? t('ctest.own.ok', { n: r.own.introPoints ?? '?' }) : r.own.state === 'warn' ? t('ctest.own.hidden') : r.own.state === 'wait' ? t('ctest.own.wait') : t('ctest.own.fail'));
+    row(r.find.state === 'unknown' ? 'warn' : r.find.state, t('ctest.find'), t('ctest.find.' + r.find.state));
+    if (r.reach.state === 'refused') row('warn', t('ctest.reach'), t('ctest.reach.refused', { n: r.reach.status }));
+    else if (r.reach.state === 'fail' && r.find.state === 'fail') row('skip', t('ctest.reach'), t('ctest.reach.skip'));
+    else row(r.reach.state, t('ctest.reach'), t('ctest.reach.' + r.reach.state));
+    row(r.clock.state === 'unknown' ? 'skip' : r.clock.state, t('ctest.clock'), r.clock.state === 'warn' ? t('ctest.clock.warn', { m: Math.max(1, Math.round(Math.abs(r.clock.skewSec) / 60)) }) : t('ctest.clock.' + r.clock.state));
+    row('info', t('ctest.queue'), String(r.queue.count));
+    // All is well: the sentence about waiting messages only when some are waiting (they were just sent on).
+    verdict.textContent = t('ctest.v.' + (r.verdict === 'ok' && r.queue.count > 0 ? 'ok-waiting' : r.verdict));
+    verdict.className = 'ctest-verdict ' + (r.verdict === 'ok' ? 'ok' : 'warn');
+  };
+  const run = async () => {
+    const mine = ++token;
+    again.disabled = true;
+    rows.textContent = '';
+    verdict.className = 'ctest-verdict';
+    verdict.textContent = t('ctest.running');
+    try {
+      const res = await fetch('/api/contact-test/' + encodeURIComponent(c.address), { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.verdict) throw new Error(data.error || 'failed');
+      if (!gone && mine === token) show(data);
+    } catch {
+      if (!gone && mine === token) { rows.textContent = ''; verdict.className = 'ctest-verdict warn'; verdict.textContent = t('ctest.fail'); }
+    } finally { if (!gone && mine === token) { again.disabled = false; } }
+  };
+  again.onclick = run;
+  setTimeout(() => close.focus(), 50);
+  run();
+}
 
 function askConfirm(message, okLabel) {
   return new Promise(resolve => {
@@ -5538,11 +5696,19 @@ function initLogPanel() {
       if (h.detail === 'reachable' && h.introPoints != null) {
         extra = '  •  ' + (t('hs.introPoints')) + ': ' + h.introPoints;
       }
+      // Whether our own address can be found through the network (the backend's self-test, lib/selftest.js): the line above is only what the
+      // network program says about itself.
+      const selfState = (h.selfTest && h.selfTest.state) || 'idle';
+      const [selfDot, selfLabel] = selfState === 'findable' ? ['ok', t('hs.self.yes')] : selfState === 'not-findable' ? ['warn', t('hs.self.no')]
+        : selfState === 'checking' ? ['idle', t('hs.self.checking')] : selfState === 'unknown' ? ['idle', t('hs.self.unknown')] : ['idle', t('hs.self.idle')];
       hsHealth.innerHTML = '';
       hsHealth.append(
         el('span', { className: 'hs-health-key', textContent: t('hs.service') }),
         el('span', { className: 'hs-dot ' + dot }),
-        el('span', { className: 'hs-health-label', textContent: label + extra })
+        el('span', { className: 'hs-health-label', textContent: label + extra }),
+        el('span', { className: 'hs-health-key hs-health-key2', textContent: t('hs.self') }),
+        el('span', { className: 'hs-dot ' + selfDot }),
+        el('span', { className: 'hs-health-label', textContent: selfLabel })
       );
     }
 
@@ -5559,7 +5725,7 @@ function initLogPanel() {
     for (const line of lines) {
       const span = el('span');
       span.textContent = line + '\n';
-      if (/\[AnonChat\]/.test(line))                span.className = /delivered after/.test(line) ? 'lb-boot' : 'lb-warn';   // why messages wait (lib/deliverylog.js)
+      if (/\[AnonChat\]/.test(line))                span.className = /delivered after|can be found again|network is ready/.test(line) ? 'lb-boot' : 'lb-warn';   // why messages wait (lib/deliverylog.js)
       else if (/Bootstrapped/i.test(line))         span.className = 'lb-boot';
       else if (/\[warn\]/i.test(line))             span.className = 'lb-warn';
       else if (/\[err\]|error/i.test(line))        span.className = 'lb-err';
@@ -5652,6 +5818,8 @@ async function init() {
   setInterval(poll, 20000);
   setInterval(refreshWhoami, 15000);
   setInterval(ensurePrekeys, 60000);
+  rotateSpkIfDue().catch(() => {});
+  setInterval(() => { rotateSpkIfDue().catch(() => {}); }, 6 * 3600 * 1000);
   // Group members whose keys couldn't be fetched yet (offline, say): try again, so their messages can be checked and read.
   setInterval(() => { prefetchPeers(); }, 60000);
   checkFreeSpace(); setInterval(checkFreeSpace, 5 * 60 * 1000);
@@ -6699,7 +6867,7 @@ function openSettingsDialog(focus) {
 
   const sizeRow = el('div', { className: 'set-opt-row' });
   sizeRow.append(el('span', { className: 'set-row-label', textContent: t('settings.chatSize') }));
-  const sizeSel = el('select', { className: 'set-select' });
+  const sizeSel = el('select', { className: 'set-select', 'aria-label': t('settings.chatSize') });
   const SIZE_LABELS = {
     small:  t('size.small'),
     medium: t('size.medium'),
@@ -6734,7 +6902,7 @@ function openSettingsDialog(focus) {
 
   const langRow = el('div', { className: 'set-opt-row' });
   langRow.append(el('span', { className: 'set-row-label', textContent: t('settings.language') }));
-  const langSel = el('select', { className: 'set-select' });
+  const langSel = el('select', { className: 'set-select', 'aria-label': t('settings.language') });
   for (const { code, label } of LANGS) {
     const opt = el('option', { value: code, textContent: label });
     if (code === getLang()) opt.selected = true;
@@ -6760,7 +6928,7 @@ function openSettingsDialog(focus) {
     const showRow = el('div', { className: 'set-opt-row' });
     const showLabel = el('div', { style: 'flex:1' });
     showLabel.append(el('div', { className: 'set-row-label', textContent: t('settings.notifShow') }), el('div', { className: 'set-desc', textContent: t('settings.notifShowDesc') }));
-    const sel = el('select', { className: 'set-select', id: 'notif-show' });
+    const sel = el('select', { className: 'set-select', id: 'notif-show', 'aria-label': t('settings.notifShow') });
     for (const v of NOTIFY_SHOW) sel.append(el('option', { value: v, textContent: t('notif.show.' + v) }));
     sel.value = notifyShow();
     sel.onchange = () => { try { localStorage.setItem('anyonechat.notifyShow', sel.value); } catch {} };

@@ -24,6 +24,8 @@ const UI_TOKEN = UI_TOKEN_GIVEN ? process.env.ANONCHAT_UI_TOKEN : require('crypt
 const UI_LINK  = UI_TOKEN_GIVEN ? `http://localhost:${UI_PORT}` : `http://localhost:${UI_PORT}/?t=${UI_TOKEN}`;
 
 const children = [];
+// Exit codes the desktop's start screen and window explain (desktop/splash/index.html, desktop/main.js). 5 is server.js's (public port busy).
+const EXIT_SOCKS_BUSY = 6, EXIT_ANON_STOPPED = 7;
 let poll = null;
 
 // Keep the supervisor itself alive on stray errors — log, don't die silently.
@@ -34,12 +36,15 @@ process.on('uncaughtException', (err) => { console.error('[start] uncaughtExcept
   const prefs = netprefs.load(DATA_DIR);
   const ports = await choosePorts({ dynamic: prefs.dynamicPort });
   if (ports.socksMoved) console.log(`  [net] SOCKS port 9050 is busy - using ${ports.socks} instead`);
+  // Port 9050 held by another program while "Dynamic port" is off: stop here. Our network program couldn't take the port, and the
+  // backend would send everything (contact addresses, envelopes, the key lookups of contacts being added) to whatever holds it.
   if (ports.socksBlocked) {
     console.error(`
   [error] SOCKS port 9050 is already in use and "Dynamic port" is off.
           Free the port, or turn "Dynamic port" on (Circuits tab) / delete
           ${path.join(DATA_DIR, 'network.json')} and start again.
 `);
+    return shutdown(EXIT_SOCKS_BUSY);
   }
 
   const anonDirForRc = path.isAbsolute(ANON_DIR) ? ANON_DIR : './anon';
@@ -87,7 +92,8 @@ ${geoLines.map((l) => l + '\n').join('')}`);
       ? vendorModules + path.delimiter + childEnv.NODE_PATH
       : vendorModules;
   }
-  const serverEnv = { ...childEnv, ANONCHAT_UI_TOKEN: UI_TOKEN, NODE_ENV: 'production' };
+  // The backend waits for the network to be ready before it sends anything (lib/netready.js); only here, where the network program is its own.
+  const serverEnv = { ...childEnv, ANONCHAT_UI_TOKEN: UI_TOKEN, NODE_ENV: 'production', ANONCHAT_WAIT_NETWORK: '1' };
   if (process.env.ANONCHAT_KEY_STDIN === '1') serverEnv.ANONCHAT_KEY_STDIN = '1';
   // Use process.execPath, not a bare 'node': it is the bundled runtime in the packaged app, and works when PATH has no node.
   const server = spawn(process.execPath, [path.join(ROOT, 'server.js')], { cwd: ROOT, stdio: 'inherit', windowsHide: true, env: serverEnv });
@@ -117,10 +123,15 @@ ${geoLines.map((l) => l + '\n').join('')}`);
     }
     shutdown(1);
   });
-  anon.on('exit', (code) => {
-    if (code !== 0 && !printed) {
-      console.error(`\n  [error] anon exited with code ${code} before publishing an address.\n`);
-    }
+  // The network program stopping, for any reason, stops everything: its ports become free, and another program could take them and
+  // receive what the backend sends (contact addresses, envelopes, the key lookups of contacts being added).
+  anon.on('exit', (code, signal) => {
+    if (shuttingDown) return;
+    const how = code != null ? `code ${code}` : `signal ${signal}`;
+    console.error(printed
+      ? `\n  [error] anon stopped (${how}). Stopping AnonChat: nothing is sent without it.\n`
+      : `\n  [error] anon exited (${how}) before publishing an address.\n`);
+    shutdown(EXIT_ANON_STOPPED);
   });
 
   let printed = false;

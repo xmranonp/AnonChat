@@ -231,6 +231,16 @@ function spawnBackend(splash, dataKey) {
     if (!stopping && splash && !splash.isDestroyed()) {
       try { splash.webContents.send('backend-error', 'exit ' + (code != null ? code : sig)); } catch {}
     }
+    // Already in the window: the backend or the Anyone network program stopped on its own (start.js stops both together, so nothing is
+    // ever sent through a port another program could take). Say so and quit, rather than leave a window that can do nothing.
+    else if (!stopping && mainWin && !mainWin.isDestroyed()) {
+      const detail = code === 7
+        ? U('stopped.anon', 'The Anyone network program stopped unexpectedly. Nothing is sent until AnonChat starts again.')
+        : U('stopped.other', 'AnonChat\u2019s background service stopped unexpectedly.') + ' (' + (code != null ? 'code ' + code : sig) + ')';
+      dialog.showMessageBox(mainWin, { type: 'error', noLink: true, buttons: ['OK'], title: 'AnonChat',
+        message: U('stopped.title', 'AnonChat stopped'), detail })
+        .catch(() => {}).finally(() => app.quit());
+    }
   });
 
   backendChild = child;
@@ -748,7 +758,10 @@ async function obtainDataKey(splash) {
       if (a.action === 'erase') { await eraseBeforeStart(); throw new Error('erased'); }
       if (typeof a.pass !== 'string' || !a.pass) { error = 'empty'; continue; }
       splash.webContents.send('key-busy');
-      const dk = await keystore.unwrapPassphrase(ks, a.pass);
+      let dk;
+      try { dk = await keystore.unwrapPassphrase(ks, a.pass); }
+      catch (e) { await keyFailure(splash, 'damaged'); throw e; }   // anything unexpected: say so, never stay on "Unlocking…"
+
       if (dk) { DATA_KEY = dk; break; }
       tries++;
       error = 'wrong';

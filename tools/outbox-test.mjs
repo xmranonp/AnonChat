@@ -9,6 +9,7 @@ import { randomBytes } from 'node:crypto';
 
 const APP = process.argv[2] || join(fileURLToPath(new URL('.', import.meta.url)), '..');
 process.env.DATA_DIR = mkdtempSync(join(tmpdir(), 'outbox-'));
+process.env.OUTBOX_ROUND_WAIT_MS = '400';    // a round waits at most this long for a slow recipient (60 s in the app)
 const require = createRequire(import.meta.url);
 require(join(APP, 'lib/sealed.js')).setKey(randomBytes(32));
 const outbox = require(join(APP, 'lib/outbox.js'));
@@ -19,7 +20,7 @@ const httpErr = (status, data = {}) => Object.assign(new Error('Request failed w
 
 let answer = () => ({});                 // what the recipient does with the next POST
 const posted = [];
-const onion = () => ({ post: async (url, body) => { posted.push(body); const a = answer(body); if (a instanceof Error) throw a; return { data: a }; } });
+const onion = () => ({ post: async (url, body) => { posted.push(body); const a = await answer(body); if (a instanceof Error) throw a; return { data: a }; } });
 let key = null;
 outbox.init({ onion, pow: { solveAsync: async () => 'nonce' }, myAddress: () => 'me.anyone',
   stamp: (env, from, to) => { const { stamp: _s, ...plain } = env; return key ? { ...plain, stamp: key + ':' + to } : plain; } });
@@ -211,6 +212,28 @@ ok('…the outcomes survive a restart', bigIds.every((id) => outbox._outcomes.ge
   for (let k = 0; k < 200 && outbox.list().some((i) => i.toAddress === BACK); k++) await new Promise((r) => setTimeout(r, 25));
   const took = Date.now() - t0;
   ok('…and the rest go a few seconds later, in order, not at the next 15 s round', !outbox.list().some((i) => i.toAddress === BACK) && took < 5000 && posted.map((p) => p.ct).join() === 'back0,back1,back1,back2,back3', [took, posted.map((p) => p.ct).join()]);
+}
+
+// A recipient that starts answering and never finishes (one byte now and then) must not hold up the retry rounds for everyone else.
+{
+  const SLOW = 's'.repeat(56) + '.anyone', OTHER = 'o'.repeat(56) + '.anyone';
+  let release; const hang = new Promise((r) => { release = r; });
+  posted.length = 0;
+  answer = (b) => (b.ct === 'slow' ? hang : { ok: true });
+  const idSlow = outbox.enqueue(SLOW, { ct: 'slow', dh: 'd' }, 'me.anyone', 86400000);
+  const idOther = outbox.enqueue(OTHER, { ct: 'fine', dh: 'd' }, 'me.anyone', 86400000);
+  const t0 = Date.now();
+  await outbox._flush();
+  const took = Date.now() - t0;
+  ok('a recipient that never finishes answering doesn\'t hold up the round: it ends after the round wait', took >= 350 && took < 3000, took);
+  ok('…and the other recipient\'s message went out', !outbox.list().some((i) => i.id === idOther));
+  const idOther2 = outbox.enqueue(OTHER, { ct: 'fine2', dh: 'd' }, 'me.anyone', 86400000);
+  await outbox._flush();
+  ok('the next round still delivers to others while that one is going', !outbox.list().some((i) => i.id === idOther2));
+  ok('…and doesn\'t try the slow one a second time meanwhile', posted.filter((p) => p.ct === 'slow').length === 1, posted.map((p) => p.ct).join());
+  release({ ok: true });
+  for (let k = 0; k < 40 && outbox.list().some((i) => i.id === idSlow); k++) await new Promise((r) => setTimeout(r, 25));
+  ok('when it finally answers, its message is done', !outbox.list().some((i) => i.id === idSlow));
 }
 
 console.log(`${pass} passed, ${fail} failed`);

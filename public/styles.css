@@ -20,7 +20,7 @@
   --border-hi:  #404040;
   --text:       #ECECEC;
   --text-dim:   #A8A8A8;
-  --muted:      #6E6E6E;
+  --muted:      #969696;
 
   --signal:     #1BC1EF;          /* the logo's cyan */
   --brand-cyan: var(--signal);
@@ -61,7 +61,7 @@
   --border-hi:  #CFCFD4;
   --text:       #1C1C1E;
   --text-dim:   #5B5B61;
-  --muted:      #8A8A90;
+  --muted:      #66666C;
   --signal:     #0679AA;          /* darker cyan so small text and white-on-cyan buttons stay readable (AA) */
   --brand-cyan: var(--signal);
   --signal-rgb: 6,121,170;
@@ -1360,8 +1360,10 @@ label.grp-member-row {
 .hs-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .hs-dot.ok    { background: var(--ok);   box-shadow: 0 0 6px rgba(var(--ok-rgb),0.6); }
 .hs-dot.warn  { background: var(--live); box-shadow: 0 0 6px rgba(var(--live-rgb),0.6); }
+.hs-dot.idle  { background: var(--muted); }
+.hs-health-key2 { margin-left: 12px; }
 .hs-health {
-  display: flex; align-items: center; gap: 9px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 4px 9px;
   padding: 10px 22px; border-bottom: 1px solid var(--border);
   flex-shrink: 0; min-height: 18px;
 }
@@ -2370,3 +2372,20 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .restore-overlay { z-index: 1300; }
 .restore-finish { z-index: 1400; }
 .restore-finish .welcome-card { text-align: center; }
+
+/* Test connection (conversation menu): one line per step, a glyph, the step, what was found. */
+.ctest-dialog { width: min(440px, calc(100vw - 32px)); }
+.ctest-title { margin: 0 0 12px; font-size: 15px; font-weight: 600; color: var(--text); overflow-wrap: anywhere; }
+.ctest-rows { display: flex; flex-direction: column; gap: 6px; min-height: 8px; }
+.ctest-row { display: grid; grid-template-columns: 18px max-content minmax(0, 1fr); gap: 8px; align-items: baseline; font-size: 13px; }
+.ctest-glyph { text-align: center; font-weight: 700; color: var(--text-dim); }
+.ctest-row.ok .ctest-glyph { color: var(--ok); }
+.ctest-row.fail .ctest-glyph { color: var(--err); }
+.ctest-row.warn .ctest-glyph { color: var(--live); }
+.ctest-label { color: var(--text-dim); white-space: nowrap; }
+.ctest-value { color: var(--text); text-align: right; overflow-wrap: anywhere; }
+.ctest-verdict { margin: 14px 0 0; padding: 10px 12px; border-radius: var(--r-md); background: var(--panel-2, var(--raised)); font-size: 13px; line-height: 1.45; color: var(--text); }
+.ctest-verdict.ok { box-shadow: inset 3px 0 0 var(--ok); }
+.ctest-verdict.warn { box-shadow: inset 3px 0 0 var(--live); }
+.ctest-dialog .confirm-actions button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 420px) { .ctest-row { grid-template-columns: 18px minmax(0, 1fr); } .ctest-value { grid-column: 2; text-align: left; } }

@@ -1,9 +1,11 @@
 // Fake anon control port for UI tests. Control: HTTP on CONTROL_HTTP_PORT: POST /state {circuits, streams, published}, POST /emit {line},
 // POST /delays {list:[ms,...]} (next circuit-status answers), POST /fail {n} (next n circuit-status queries fail), GET /log,
-// POST /bootstrap {pct, silent} (the progress reported; silent: bootstrap queries get no answer).
+// POST /bootstrap {pct, silent} (the progress reported; silent: bootstrap queries get no answer),
+// POST /consensus {ageMs} (how old the relay list is; null: none), GET /hspost (how many HSPOST commands came in).
 import net from 'node:net'; import http from 'node:http'; import fs from 'node:fs';
 const [ctlPort, httpPort, dir] = process.argv.slice(2).map((x, i) => i < 2 ? Number(x) : x);
 fs.writeFileSync(dir + '/control_auth_cookie', Buffer.alloc(32, 7));
+let consensusAge = 0, hsposts = 0, inData = false; // the relay list's age in ms (null: none yet); HSPOST bodies received
 let circuits = [], streams = [], published = false, delays = [], fails = 0, bootPct = 100, bootSilent = false; const watchers = new Set(); const log = [];
 const block = (name, lines) => lines.length ? `250+${name}=\r\n` + lines.join('\r\n') + '\r\n.\r\n250 OK\r\n' : `250-${name}=\r\n250 OK\r\n`;
 net.createServer((sock) => {
@@ -12,6 +14,13 @@ net.createServer((sock) => {
     buf += d.toString(); let i;
     while ((i = buf.indexOf('\n')) >= 0) {
       const cmd = buf.slice(0, i).trim(); buf = buf.slice(i + 1); log.push(cmd.slice(0, 60));
+      if (inData) { if (cmd === '.') { inData = false; hsposts++; sock.write('250 OK\r\n'); } continue; }   // the body of a multi-line command (HSPOST)
+      if (cmd.startsWith('+HSPOST')) { inData = true; continue; }
+      if (cmd.startsWith('GETINFO consensus/')) {
+        if (consensusAge == null) { sock.write('552 No consensus available\r\n'); continue; }
+        const k = cmd.slice(18), base = Date.now() - consensusAge, t = k === 'valid-after' ? base : k === 'fresh-until' ? base + 3600000 : base + 10800000;
+        sock.write(`250-consensus/${k}=${new Date(t).toISOString().slice(0, 19).replace('T', ' ')}\r\n250 OK\r\n`); continue;
+      }
       if (cmd.startsWith('AUTHENTICATE')) sock.write('250 OK\r\n');
       else if (cmd.startsWith('SETEVENTS')) { if (/STREAM/.test(cmd)) watchers.add(sock); sock.write('250 OK\r\n'); }
       else if (cmd === 'GETINFO circuit-status') {
@@ -41,7 +50,8 @@ http.createServer((req, res) => {
     if (req.url === '/emit') for (const w of watchers) w.write(j.line + '\r\n');
     if (req.url === '/delays') delays = j.list || [];
     if (req.url === '/fail') fails = j.n || 0;
+    if (req.url === '/consensus') consensusAge = 'ageMs' in j ? j.ageMs : 0;
     if (req.url === '/bootstrap') { if ('pct' in j) bootPct = j.pct; if ('silent' in j) bootSilent = !!j.silent; }
-    res.end(JSON.stringify(req.url === '/log' ? log.slice(-200) : { ok: true }));
+    res.end(JSON.stringify(req.url === '/log' ? log.slice(-200) : req.url === '/hspost' ? { n: hsposts } : { ok: true }));
   });
 }).listen(httpPort, '127.0.0.1');

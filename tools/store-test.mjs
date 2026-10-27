@@ -3,7 +3,7 @@
 // Run: node tools/store-test.mjs
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,6 +95,31 @@ console.log('6. Files can\u2019t be planted or swapped');
   writeFileSync(join(d2, 'contacts.json'), readFileSync(join(d2, 'blocked.json')));
   const r2 = run(d2, KEY, `out(store.checkAll());`);
   ok('an encrypted file copied over another one is detected', r2.ok === false && r2.problems.some((p) => p.file === 'contacts.json' && p.reason === 'BAD_SEAL'));
+}
+
+console.log('Leftovers of an interrupted write');
+{
+  const d = fresh();
+  run(d, KEY, `store.upsertContact({ address: 'r', petname: 'Real' }); out(1);`);
+  mkdirSync(join(d, 'inbox'), { recursive: true });
+  writeFileSync(join(d, 'contacts.json.123.abcdef.tmp'), 'half a write');
+  writeFileSync(join(d, 'inbox', 'x.env.456.tmp'), 'half a write');
+  writeFileSync(join(d, 'inbox', 'keep.txt'), 'not ours');
+  const r = run(d, KEY, `out({ contacts: store.getContacts().length });`);
+  ok('stray .tmp files are removed when the backend starts', !readdirSync(d).some((n) => n.endsWith('.tmp')) && !readdirSync(join(d, 'inbox')).some((n) => n.endsWith('.tmp')));
+  ok('…and nothing else is touched', readdirSync(join(d, 'inbox')).includes('keep.txt') && r.contacts === 1);
+}
+{
+  // server.js's note of when an address was last checked stays at 2000, forgetting the oldest first.
+  const src = readFileSync(join(root, 'server.js'), 'utf8');
+  const i = src.indexOf('function noteCheck'); const fn = src.slice(i, src.indexOf('\n}\n', i) + 2);
+  const noteCheck = new Function(fn + '\nreturn noteCheck;')();
+  const m = new Map();
+  for (let k = 0; k < 5000; k++) noteCheck(m, 'a' + k, k);
+  ok('the map of checked addresses stays at 2000', m.size === 2000);
+  ok('…the newest are kept, the oldest forgotten', m.has('a4999') && m.has('a3000') && !m.has('a2999') && !m.has('a0'));
+  noteCheck(m, 'a3000', 9999); noteCheck(m, 'new', 10000);
+  ok('…and an address checked again counts as new', m.has('a3000') && !m.has('a3001') && m.get('a3000') === 9999);
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
