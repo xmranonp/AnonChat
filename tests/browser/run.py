@@ -8,7 +8,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SUITES = ['circuits', 'emoji', 'firstpass', 'novault', 'security', 'backup', 'callnotice', 'groups', 'notify', 'pin', 'ring', 'storage',
           'audit_peer', 'audit_misc', 'audit_walk', 'audit_burst', 'audit_esc', 'audit_load',
           'audit2_groups', 'audit2_delivery', 'audit2_keys', 'audit2_waiting', 'audit2_groupwait', 'audit2_names',
-          'audit2_removed', 'audit3_cross', 'audit3_deadpath', 'audit3_map', 'audit3_callaudio', 'audit4_fixes', 'audit5_groups', 'audit6_fixes', 'connection_test', 'network_ready', 'spk_rotation']
+          'audit2_removed', 'audit3_cross', 'audit3_deadpath', 'audit3_map', 'audit3_callaudio', 'audit4_fixes', 'audit5_groups', 'audit6_fixes', 'f1_auth', 'media_clean', 'connection_test', 'network_ready', 'spk_rotation']
 pick = sys.argv[1:] or SUITES
 failed = []
 for name in pick:

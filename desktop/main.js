@@ -6,6 +6,19 @@ const fs    = require('fs');
 const http  = require('http');
 const { spawn } = require('child_process');
 
+// F-8: a packaged build cannot be opened up for debugging from outside. This runs before anything else (also before the Wayland re-exec,
+// which would pass the switches on): a debugging port or pipe, a launcher in front of Chromium's processes, or injected code is refused,
+// and ANONCHAT_DEBUG is ignored. Only an unpackaged development run (npm start) can debug.
+const DEBUG_UI = !app.isPackaged;
+if (app.isPackaged) {
+  delete process.env.ANONCHAT_DEBUG;
+  const bad = require('./debug-guard').refusedSwitch(process.argv.slice(1));
+  if (bad) {
+    console.error(`AnonChat: the switch --${bad} is not allowed in the installed app (it would let other programs read the window).`);
+    process.exit(2);
+  }
+}
+
 // On native Wayland the compositor ignores client-side window placement (the splash can't be centred). The ozone platform is chosen before app.commandLine can affect it, so the app re-execs itself with --ozone-platform=x11. ANONCHAT_WAYLAND=1 opts out.
 if (process.platform === 'linux' && process.env.ANONCHAT_WAYLAND !== '1') {
   const onWayland  = !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland';
@@ -384,7 +397,7 @@ function createMain() {
     console.error('[renderer] preload-error:', p, err && err.message ? err.message : err);
   });
 
-  if (process.env.ANONCHAT_DEBUG === '1' || !app.isPackaged) {
+  if (DEBUG_UI) {
     mainWin.webContents.on('console-message', (evt) => {
       const { level, message, sourceId, lineNumber } = evt;
       console.log(`[renderer:${level}] ${sourceId || '?'}:${lineNumber || 0} ${message}`);

@@ -110,6 +110,15 @@ Press the phone button in a conversation header. The other side gets a ringing c
 - **No clearnet, ever**: voice uses no WebRTC, STUN, TURN or UDP. The WebRTC API is removed from the page before any other script runs, the desktop shell forces `disable_non_proxied_udp`, the Content-Security-Policy only allows the local backend, and the backend can only open the call link through the SOCKS proxy (`socks5h`, so the `.anyone` name is resolved inside the network). `npm test` checks all of this (check 14).
 - **What to expect**: a call crosses five relays plus the rendezvous point, so expect about 2 to 3 seconds from mouth to ear, like a satellite call: about a second of network, plus a cushion that rides out the route's pauses instead of cutting out. The call card shows the live delay. The other side's voice is played through an ordinary audio player in the page, which the system's echo cancellation knows about; headphones still give the cleanest sound.
 
+### Sending photos and videos
+
+Everything you attach as a photo, video or audio file is cleaned on your device **before** it is encrypted and sent, and the file gets a neutral name (`photo.jpg`, `video.mp4`). If a file cannot be cleaned it is **not sent**; the original is never used as a fallback.
+
+- **Photos stay as sharp as possible.** JPEG, PNG, GIF and WebP files are cleaned *without re-encoding*: only the parts that carry no picture are cut out (Exif / GPS / camera / time, XMP, IPTC, comments, embedded thumbnails, trailing data such as motion-photo videos), so the pixels are byte for byte what your camera wrote. A photo is drawn again, at JPEG quality 0.95 (PNG when there is transparency), only when it has to change anyway: it is stored sideways with an orientation tag, it is wider than 4096 px, it is over the 5 MB limit, or it is in another format (BMP, SVG, ...). Colour profiles are kept up to 64 KB so colours do not shift. Animated GIF / WebP stay animated.
+- **Videos and audio:** MP4 / MOV / M4A boxes and WebM elements that carry metadata (location, make and model, title, creation time, handler names, timed-metadata tracks) are blanked in place, so the file keeps its length and plays as before; MP3 loses its ID3 tags. The video and audio streams are not touched. The encoder's own name (for example `Lavf` or a phone's codec string) can remain inside the video stream.
+- **Not cleaned:** files sent as plain files (PDF, documents, archives) go exactly as they are, with their name; clean them yourself if they matter. Formats that cannot be cleaned here (AVI, MKV, OGG, WAV, HEIC, ...) are refused with a message; convert them first.
+- The same file is shown to you in the conversation as it was sent, so what you see is what they get.
+
 ### No metadata leaks
 
 - No phone number or email
@@ -117,6 +126,8 @@ Press the phone button in a conversation header. The other side gets a ringing c
 - No account or central server logs
 
 - No IP exposure to peers
+
+- Photos, videos and audio are cleaned before they are sent: location, camera and phone model, time stamps, embedded thumbnails and the file name never leave your device (see *Sending photos and videos* below). Other files are sent as you chose them
 
 - Only encrypted payloads over anonymous routing
 
@@ -144,6 +155,7 @@ AnonChat/
 │   ├── app.js           #   client logic
 │   ├── ratchet.js       #   Double Ratchet + X3DH + signed prekeys
 │   ├── call.js          #   voice calls: call crypto, Opus audio, jitter buffer, call card
+│   ├── auth.js          #   browser mode: keeps the access token from the link in the tab and sends it as a header (no cookie)
 │   ├── no-rtc.js        #   removes the WebRTC API before anything else runs
 │   ├── crypto.js        #   primitives
 │   ├── i18n.js          #   UI strings, 10 languages

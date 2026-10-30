@@ -5,7 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import harness as H
 import _args
 from playwright.sync_api import sync_playwright
-net = H.Net(['ana', 'bob'], env={'RL_BURST': '1000', 'RL_PER_MIN': '10000'})
+net = H.Net(['ana', 'bob'], env={'RL_BURST': '1000', 'RL_PER_MIN': '10000'}, apps={'ana': H.hostile_app()})
 A = {n: net.nodes[n]['addr'] for n in net.nodes}
 # A 1x1 PNG.
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
@@ -33,7 +33,10 @@ try:
         H.check('…the background program refuses it too, whatever the window does', r['status'] == 409 and r['body'].get('error') == 'already_contact', r)
 
         # Ana sends a picture named like a program.
-        ana.set_input_files('#file-input', files=[{'name': 'holiday.jpg.exe', 'mimeType': 'image/png', 'buffer': PNG}])
+        # AnonChat itself now renames photos before sending, so the hostile name is put on the wire by a modified client (window.__evil).
+        ana.evaluate("""async (b64) => { const E = window.__evil; const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+          const c = E.contactByAddress(%s);
+          await E.deliver(c, E.encodeFrame('image', { name: 'holiday.jpg.exe', type: 'image/png', size: bytes.length, thumb: null, mid: crypto.randomUUID() }, bytes)); }""" % __import__('json').dumps(A['bob']), base64.b64encode(PNG).decode())
         H.wait(bob, "!!document.querySelector('#conv-body .bubble-image')", 60000)
         bob.wait_for_timeout(800)
         with bob.expect_download(timeout=15000) as dl:

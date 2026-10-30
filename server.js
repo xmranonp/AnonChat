@@ -535,10 +535,12 @@ pub.post('/api/inbox', (req, res) => {
 
 // UI access check. A DNS-rebinding page arrives with its own Host name, and any other local program or browser tab has no token.
 // The desktop app creates a random token at each launch and adds it as a header to every request its window makes; the page itself never sees it.
-// Browser mode (npm start / npm run web) prints a one-time link that swaps the token for an HttpOnly cookie.
+// Browser mode (npm start / npm run web) prints a link with the token in its fragment (#t=...): the page keeps it in its own tab and
+// sends it as that same header. There is no cookie: browsers send cookies to every port on the same host name, so any other local web
+// server the person opened in that browser would have received it. The page's own files (no secrets in them) are served without it;
+// every /api call and both WebSockets need it.
 const UI_HOSTS = new Set([`127.0.0.1:${UI_PORT}`, `localhost:${UI_PORT}`]);
 const UI_TOKEN_HEADER = 'x-anonchat-token';
-const UI_COOKIE = `anonchat_ui_${UI_PORT}`;
 const UI_TOKEN_FROM_ENV = typeof process.env.ANONCHAT_UI_TOKEN === 'string' && process.env.ANONCHAT_UI_TOKEN.length >= 32;
 const UI_TOKEN = UI_TOKEN_FROM_ENV ? process.env.ANONCHAT_UI_TOKEN : crypto.randomBytes(32).toString('hex');
 delete process.env.ANONCHAT_UI_TOKEN;
@@ -548,15 +550,18 @@ function tokenMatches(candidate) {
   const h = crypto.createHash('sha256').update(candidate).digest();   // equal-length digests, so the comparison takes the same time for any input
   return crypto.timingSafeEqual(h, UI_TOKEN_HASH);
 }
-function cookieToken(header) {
-  for (const part of String(header || '').split(';')) {
-    const i = part.indexOf('=');
-    if (i > 0 && part.slice(0, i).trim() === UI_COOKIE) return part.slice(i + 1).trim();
+// A browser can't set headers on a WebSocket, so the page offers the token as a second sub-protocol ("anonchat.<token>"); the server
+// accepts the connection with the plain "anonchat" one, so the token is never echoed back.
+function wsProtocolToken(headers) {
+  for (const p of String(headers['sec-websocket-protocol'] || '').split(',')) {
+    const v = p.trim();
+    if (v.startsWith('anonchat.')) return v.slice(9);
   }
   return null;
 }
 function uiHostAllowed(headers) { return UI_HOSTS.has(String(headers.host || '').toLowerCase()); }
-function uiTokenPresent(headers) { return tokenMatches(headers[UI_TOKEN_HEADER]) || tokenMatches(cookieToken(headers.cookie)); }
+function uiTokenPresent(headers) { return tokenMatches(headers[UI_TOKEN_HEADER]); }
+function wsTokenPresent(headers) { return uiTokenPresent(headers) || tokenMatches(wsProtocolToken(headers)); }
 
 const ui = express();
 ui.disable('x-powered-by');
@@ -571,14 +576,19 @@ ui.use((req, res, next) => {
     if (!n) return res.status(400).end();
     return res.json({ mac: crypto.createHmac('sha256', UI_TOKEN).update('anonchat-hello|' + n).digest('hex') });
   }
-  // Browser mode: GET /?t=<token> sets the cookie and reloads without the token in the address bar.
+  // Older links (/?t=<token>): moved to the fragment form, which never reaches a server or a log.
   if (req.method === 'GET' && req.path === '/' && typeof req.query.t === 'string') {
     if (!tokenMatches(req.query.t)) return res.status(403).end();
-    res.set('Set-Cookie', `${UI_COOKIE}=${UI_TOKEN}; HttpOnly; SameSite=Strict; Path=/`);
     res.set('Cache-Control', 'no-store');
-    return res.redirect(303, '/');
+    return res.redirect(303, '/#t=' + req.query.t);
   }
-  if (!uiTokenPresent(req.headers)) return res.status(403).set('Connection', 'close').end();
+  if (req.path.startsWith('/api/')) {
+    if (!uiTokenPresent(req.headers)) return res.status(403).set('Connection', 'close').end();
+    // Even with the token, a request that a browser says came from another site, or carries another origin, isn't ours.
+    const site = req.headers['sec-fetch-site'];
+    const origin = req.headers.origin;
+    if ((site && site !== 'same-origin') || (origin && !UI_ORIGINS.has(origin))) return res.status(403).set('Connection', 'close').end();
+  }
   next();
 });
 ui.use(noCache);
@@ -1407,7 +1417,7 @@ const uiServer = http.createServer(ui);
 function listenUi() { uiServer.listen(UI_PORT, HOST, () => {
   // The desktop app supplies the token itself and keeps it out of the logs; only a standalone run prints the sign-in link.
   if (!UI_TOKEN_FROM_ENV) {
-    console.log(`  - private UI   -> http://localhost:${UI_PORT}/?t=${UI_TOKEN}`);
+    console.log(`  - private UI   -> http://localhost:${UI_PORT}/#t=${UI_TOKEN}`);
     console.log(`                    (open this link in your browser; it changes every launch)`);
   } else {
     console.log(`  - private UI   -> http://${HOST}:${UI_PORT}`);
@@ -1489,13 +1499,14 @@ const UI_ORIGINS = new Set([
 ]);
 // Two loopback sockets share the UI port: /ws (inbox pushes) and /call-ws (voice-call audio, binary). One dispatcher, since two servers
 // bound to the same http server with different paths would each abort the other's upgrade.
-const wss = new WebSocketServer({ noServer: true });
-const callWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 4096 });
+const pickProtocol = (protocols) => (protocols.has('anonchat') ? 'anonchat' : false);
+const wss = new WebSocketServer({ noServer: true, maxPayload: 4096, handleProtocols: pickProtocol });
+const callWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 4096, handleProtocols: pickProtocol });
 uiServer.on('upgrade', (req, socket, head) => {
   const origin = req.headers.origin;
   const pathname = (req.url || '').split('?')[0];
   const wsAllowed = (!origin || UI_ORIGINS.has(origin))     // browser: must match our own origin
-    && uiHostAllowed(req.headers) && uiTokenPresent(req.headers);
+    && uiHostAllowed(req.headers) && wsTokenPresent(req.headers);
   const target = pathname === '/ws' ? wss : pathname === '/call-ws' ? callWss : null;
   if (!target || !wsAllowed) { try { socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n'); } catch {} socket.destroy(); return; }
   target.handleUpgrade(req, socket, head, (ws) => target.emit('connection', ws, req));

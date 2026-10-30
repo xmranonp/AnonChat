@@ -12,7 +12,7 @@ const pass = m => console.log('  \x1b[32m✓\x1b[0m ' + m);
 const fail = m => { failures++; console.log('  \x1b[31m✗ ' + m + '\x1b[0m'); };
 
 console.log('\n1. Syntax');
-const cjs = ['server.js', 'start.js', 'desktop/main.js', 'desktop/keystore.js', 'desktop/filename.js', 'desktop/preload.js',
+const cjs = ['server.js', 'start.js', 'desktop/main.js', 'desktop/keystore.js', 'desktop/filename.js', 'desktop/debug-guard.js', 'desktop/preload.js',
              'desktop/preload-splash.js', ...readdirSync(join(root, 'lib'))
                .filter(f => f.endsWith('.js')).map(f => 'lib/' + f)];
 for (const f of cjs) {
@@ -320,6 +320,27 @@ try {
   const m = out.match(/(\d+) passed, (\d+) failed/);
   (m && m[2] === '0') ? pass(`supervisor ${m[1]}/${m[1]}`) : fail('supervisor: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('supervisor — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n37. Browser mode has no cookie: the token travels as a header, other local programs and sites get nothing (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/ui-auth-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`browser-mode access ${m[1]}/${m[1]}`) : fail('browser-mode access: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('browser-mode access — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n38. Photos, videos and audio lose location, camera, time stamps and file names before sending; what cannot be cleaned is not sent');
+try {
+  const out = execFileSync('node', [join(root, 'tools/media-clean-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`media cleaning ${m[1]}/${m[1]}`) : fail('media cleaning: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('media cleaning — ' + ((e.stdout?.toString().match(/FAIL .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n39. The installed app refuses debugging switches and ignores ANONCHAT_DEBUG');
+try {
+  const out = execFileSync('node', [join(root, 'tools/debug-guard-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`debug guard ${m[1]}/${m[1]}`) : fail('debug guard: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('debug guard — ' + ((e.stdout?.toString().match(/FAIL .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

@@ -7,6 +7,7 @@ import { t, setLang, getLang, applyI18n, LANGS } from './i18n.js';
 import { EMOJI_CATEGORIES, EMOJI_TONES, REACTION_PRESETS as REACTION_PRESETS_DATA, EMOJI_IDS, emojiToCodepoint, emojiSrc, flagSrc } from './emoji-data.js';
 import { mountRelayGlobe, warmUpRelayGlobe } from './globe.js';
 import * as Backup from './backup.js';
+import { cleanForSending } from './mediaclean.js';
 
 function emojiImg(emoji, size = 24, lazy = false) {
   const img = el('img', {
@@ -2511,6 +2512,7 @@ function errorText(e, fallback = 'toast.failed') {
   if (/too large/i.test(m)) return t('err.tooLarge');
   if ((e && e.code === 'IK_MISMATCH') || /key_mismatch|identity key|prekey|re-add|session state corrupt/i.test(m)) return t('err.keys');
   if (/could not read image/i.test(m)) return t('err.image');
+  if (/media cleanup failed/i.test(m)) return t('err.mediaClean');
   return t(fallback);
 }
 function shownError(text) { const e = new Error(text); e.i18n = true; return e; }
@@ -2711,6 +2713,12 @@ async function makeImageThumb(blob, maxDim = 200, quality = 0.6) {
 
 async function sendBlob(blob, kind, fileName) {
   if (directTextOnly()) throw textOnlyError(contactByAddress(selected));
+  // Photos, videos and audio lose their hidden data (location, camera, time, embedded thumbnails) and their file name before anything
+  // else happens. If that is not possible the file is not sent: the original is never used instead. Other files are sent as chosen.
+  if (kind === 'image' || kind === 'video' || kind === 'audio') {
+    const cleaned = await cleanForSending(blob, kind);
+    blob = cleaned.blob; fileName = cleaned.name || fileName;
+  }
   if (blob.size > 5 * 1024 * 1024) throw new Error('file too large (5 MB max)');
   const id  = crypto.randomUUID();
   const url = URL.createObjectURL(blob);
