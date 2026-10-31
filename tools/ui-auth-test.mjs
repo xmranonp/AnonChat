@@ -1,9 +1,9 @@
 // F-1: the browser-mode UI has no cookie. The access token lives in the link's fragment, the tab keeps it, and every call carries it as a header.
 // Static pages are open (a browser cannot attach headers to them); /api and the WebSocket need the token; cross-site requests are refused even with it.
 import { spawn } from 'node:child_process'; import http from 'node:http'; import net from 'node:net'; import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
-import { createRequire } from 'node:module';
+import { createRequire } from 'node:module'; import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url); const WebSocket = require('ws');
-const root = path.join(path.dirname(new URL(import.meta.url).pathname), '..');
+const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const free = () => new Promise((r) => { const s = net.createServer().listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
 let pass = 0, fail = 0; const ok = (c, n, x) => { if (c) pass++; else { fail++; console.log('✗', n, x ?? ''); } };
 const UI = await free(), PUB = await free();
@@ -42,5 +42,5 @@ try {
   const authJs = fs.readFileSync(path.join(root, 'public/auth.js'), 'utf8'), html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
   ok(/document\.cookie/.test(authJs) === false && !/document\.cookie/.test(fs.readFileSync(path.join(root, 'public/app.js'), 'utf8')), 'no page script touches cookies');
   ok(html.indexOf('auth.js') > html.indexOf('no-rtc.js') && html.indexOf('auth.js') < html.indexOf('type="module"'), 'index.html loads auth.js before the app');
-} finally { srv.kill('SIGTERM'); fs.rmSync(d, { recursive: true, force: true }); }
+} finally { srv.kill('SIGTERM'); await new Promise((r) => setTimeout(r, 500)); try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* Windows may still hold the folder for a moment; the temp folder is cleaned later */ } }
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

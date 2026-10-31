@@ -1,8 +1,8 @@
 // Photos, videos and audio lose their hidden data before sending (public/mediaclean.js): what is cut, what stays, and that damaged input is refused, never passed on.
-import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path'; import { fileURLToPath, pathToFileURL } from 'node:url';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-')); const f = path.join(tmp, 'mediaclean.mjs');
-fs.copyFileSync(new URL('../public/mediaclean.js', import.meta.url), f);
-const M = await import(f);
+fs.copyFileSync(fileURLToPath(new URL('../public/mediaclean.js', import.meta.url)), f);
+const M = await import(pathToFileURL(f).href);   // a plain C:\ path is not a valid module address on Windows
 let pass = 0, fail = 0;
 const ok = (c, name, extra) => { if (c) pass++; else { fail++; console.log('FAIL', name, extra ?? ''); } };
 const enc = (s) => new TextEncoder().encode(s);
