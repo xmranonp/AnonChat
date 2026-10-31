@@ -10,7 +10,7 @@ A privacy-first desktop messenger that routes every message through the **Anyone
 
 </div>
 
-[Features](<#features>) · [How It Works](<#how-it-works>) · [Architecture](<#architecture>) · [Security Model](<#security-model>) · [Roadmap](<#roadmap>) · [FAQ](<FAQ.md>) · [License](<#license>)
+[Features](<#features>) · [Architecture](<#architecture>) · [Security Model](<#security-model>) · [Roadmap](<#roadmap>) · [FAQ](<FAQ.md>) · [License](<#license>)
 
 ---
 
@@ -28,7 +28,7 @@ Most messengers route your conversations through corporate servers that can see 
 
 - **Anyone Protocol hidden services** for all transport - content *and* network location are hidden.
 
-- **Encrypted at rest** \- what AnonChat keeps on disk (contacts, groups, message keys, history, media, waiting messages) is sealed with AES-256-GCM under a random data key. The one exception is the private key of your `.anyone` address: the Anyone network program reads it from its own file, which only your user account can open (see the [FAQ](FAQ.md)). The operating system's vault keeps that key (Keychain, Windows, GNOME Keyring or KWallet) and a 6-digit PIN unlocks the app; or choose a passphrase (at least 12 characters) typed at each start, which also protects a stolen disk or backup.
+- **Encrypted at rest** \- what AnonChat keeps on disk (contacts, groups, message keys, history, media, waiting messages) is sealed with AES-256-GCM under a random data key. The operating system's vault keeps that key (Keychain, Windows, GNOME Keyring or KWallet) and a 6-digit PIN unlocks the app; or choose a passphrase (at least 12 characters) typed at each start, which also protects a stolen disk or backup.
 
 - **Message requests** \- someone who isn't a contact lands in Requests, text only until you accept; Delete, Block, or turn requests off. A request is marked *Not verified yet*: the address on it is only what the sender wrote, and Accept checks it against the keys that address serves.
 
@@ -46,23 +46,20 @@ Most messengers route your conversations through corporate servers that can see 
 
 - Real-time 1:1 messaging over the onion network, with optimistic send and delivery status.
 
-- **Group chats** (up to 10 members) with admin controls, descriptions, and member management. Each person's picture appears beside the first of their messages in a row. Members talk directly to each other, so a group works while its admin is offline; only joining with the invite code and changes to the group wait for the admin. Your own message shows at once (⏳ while it is handed to every member), and when someone leaves, the admin's app passes the new member list on to everyone.
+- **Group chats** (up to 10 members) with admin controls, descriptions, and member management. Each person's picture appears beside the first of their messages in a row. Members talk directly to each other, so a group works while its admin is offline; only joining with the invite code and changes to the group wait for the admin.
 
-- **Identity backup** \- Settings → Backup saves your address, message keys, contacts, groups and settings in one file encrypted with a passphrase; restore it on another computer from the welcome screen. Message history and other people's pictures aren't included, and only one computer should run an address at a time (format: [docs/BACKUP-FORMAT.md](docs/BACKUP-FORMAT.md)).
+- **Identity backup** \- Settings → Backup saves your address, message keys, contacts, groups and settings in one file encrypted with a passphrase; restore it on another computer from the welcome screen. Message history and other people's pictures aren't included, and only one computer should run an address at a time.
 
 - **Replies**, **reactions**, and **disappearing messages** (per-conversation TTL).
 
-- **Voice calls** \- full-duplex, end-to-end encrypted calls with a contact, entirely inside the Anyone network (see *Voice calls* below).
+- **Voice calls** \- full-duplex, end-to-end encrypted calls with a contact, entirely inside the Anyone network, with no WebRTC, STUN or TURN.
 
-- **Voice messages** (up to one minute, with a live timer, level meter and cancel) and drag-and-drop **file / image / video sharing** (up to 5 MB), kept encrypted on disk; Settings → Storage shows usage per chat and clears old media.
+- **Voice messages** (up to one minute, with a live timer, level meter and cancel) and drag-and-drop **file / image / video sharing** (up to 5 MB). Photos, videos and audio are cleaned of location, camera and time, and get a neutral name, before they are sent; everything is kept encrypted on disk; Settings → Storage shows usage per chat and clears old media.
 
-- **Offline delivery** \- a message to a contact who is offline waits on your computer and is retried every 15 s for 1, 12 or 24 hours (per chat). It goes out as soon as they are back: their app tells yours when it comes online, and so does any message from them. A route that stopped working is replaced by itself after a failed try, and **Rebuild network path** (the chat's ⋮ menu) does it at once. **Test connection**, in the same menu, checks step by step where the way to a contact breaks (your address, theirs, their app, the clocks) and says what to do. Your own address is also looked up through the network every few minutes (the **Findable** line in Status); if it can't be found, the network's lookup memory is cleared and the address details are sent again. After a start, nothing is sent until the network is fully started and has a current relay list. A dot shows whether each contact can be reached. The light beside the app name sums up your own side: pulsing cyan when the network is ready, your address is reachable and a lookup of it finds it; amber (with the reason on hover) when the network is still starting, the address is not reachable yet, or the lookup of it failed and is being repaired; red when the window has lost its link to the app.
+- **Offline delivery** \- a message to a contact who is offline waits on your computer, is retried every 15 s for 1, 12 or 24 hours (per chat) and goes out as soon as they are back. A dot shows whether each contact can be reached, and the chat's ⋮ menu has **Test connection** and **Rebuild network path** for when a route fails. The light beside the app name shows your own side: cyan when you are ready and reachable, amber while the network starts or the address is being repaired, red when the window has lost its link to the app.
 
-- **Messages in the order written** \- each message goes out on its own (no waiting behind the one before), and the receiving app shows them in the order they were written even when the network delivers them out of order.
+- **Read receipts** (opt-in), **pinned conversations**, unread separators, jump-to-latest and local petnames for contacts.
 
-- **Read receipts** (opt-in), **pinned conversations**, unread separators, and jump-to-latest.
-
-- **Message search** across a conversation, and local petnames for contacts.
 
 ###  Experience
 
@@ -90,36 +87,7 @@ Most messengers route your conversations through corporate servers that can see 
 
 
 
-## How It Works
-
-1. **Identity creation** — on first launch, AnonChat generates your encryption keys and starts an Anyone Protocol hidden service. Your `.anyone` address is derived from your key.
-
-2. **Address exchange** — you and your contact share `.anyone` addresses through a channel you already trust (in person, or another secure app). Never rely on a stranger sending you one.
-
-3. **Session establishment** — adding a contact fetches and pins their public keys and signed prekey; the first message runs an X3DH handshake to derive a shared secret.
-
-4. **Secure messaging** — every message is sealed with the Double Ratchet and routed as ciphertext through the onion network. Your node only ever relays encrypted payloads.
-
-### Voice calls
-
-Press the phone button in a conversation header. The other side gets a ringing card and can accept or decline; calls are only possible between contacts, and Settings has a switch to refuse incoming calls.
-
-- **Signalling** (invite / accept / decline / cancel / end) is sent as ordinary Double-Ratchet messages, so the caller and callee are authenticated exactly like chat messages. Each side adds a fresh ephemeral P-256 key; call keys come from ECDH + HKDF (one key per direction) and exist only for that call.
-- **Audio** is Opus (WebCodecs, 24 kbit/s constant bit rate) in 40 ms frames, each sealed with AES-256-GCM using a counter nonce (replayed, altered or forged frames are dropped). Frames have a fixed size and are sent at a constant rate even while you are muted, so the stream does not reveal when you speak.
-- **Transport** is one WebSocket per call: your browser → your local backend → the loopback SOCKS proxy → the other node's hidden service. The backend only forwards ciphertext. If a circuit breaks, the caller redials the same path and the call carries on. Live audio is never queued: when a link is congested, frames are dropped rather than delayed.
-- **No clearnet, ever**: voice uses no WebRTC, STUN, TURN or UDP. The WebRTC API is removed from the page before any other script runs, the desktop shell forces `disable_non_proxied_udp`, the Content-Security-Policy only allows the local backend, and the backend can only open the call link through the SOCKS proxy (`socks5h`, so the `.anyone` name is resolved inside the network). `npm test` checks all of this (check 14).
-- **What to expect**: a call crosses five relays plus the rendezvous point, so expect about 2 to 3 seconds from mouth to ear, like a satellite call: about a second of network, plus a cushion that rides out the route's pauses instead of cutting out. The call card shows the live delay. The other side's voice is played through an ordinary audio player in the page, which the system's echo cancellation knows about; headphones still give the cleanest sound.
-
-### Sending photos and videos
-
-Everything you attach as a photo, video or audio file is cleaned on your device **before** it is encrypted and sent, and the file gets a neutral name (`photo.jpg`, `video.mp4`). If a file cannot be cleaned it is **not sent**; the original is never used as a fallback.
-
-- **Photos stay as sharp as possible.** JPEG, PNG, GIF and WebP files are cleaned *without re-encoding*: only the parts that carry no picture are cut out (Exif / GPS / camera / time, XMP, IPTC, comments, embedded thumbnails, trailing data such as motion-photo videos), so the pixels are byte for byte what your camera wrote. A photo is drawn again, at JPEG quality 0.95 (PNG when there is transparency), only when it has to change anyway: it is stored sideways with an orientation tag, it is wider than 4096 px, it is over the 5 MB limit, or it is in another format (BMP, SVG, ...). Colour profiles are kept up to 64 KB so colours do not shift. Animated GIF / WebP stay animated.
-- **Videos and audio:** MP4 / MOV / M4A boxes and WebM elements that carry metadata (location, make and model, title, creation time, handler names, timed-metadata tracks) are blanked in place, so the file keeps its length and plays as before; MP3 loses its ID3 tags. The video and audio streams are not touched. The encoder's own name (for example `Lavf` or a phone's codec string) can remain inside the video stream.
-- **Not cleaned:** files sent as plain files (PDF, documents, archives) go exactly as they are, with their name; clean them yourself if they matter. Formats that cannot be cleaned here (AVI, MKV, OGG, WAV, HEIC, ...) are refused with a message; convert them first.
-- The same file is shown to you in the conversation as it was sent, so what you see is what they get.
-
-### No metadata leaks
+## No metadata leaks
 
 - No phone number or email
 
@@ -127,7 +95,7 @@ Everything you attach as a photo, video or audio file is cleaned on your device 
 
 - No IP exposure to peers
 
-- Photos, videos and audio are cleaned before they are sent: location, camera and phone model, time stamps, embedded thumbnails and the file name never leave your device (see *Sending photos and videos* below). Other files are sent as you chose them
+- Photos, videos and audio are cleaned of location, camera, time stamps and file names before they are sent. Other files are sent as you chose them
 
 - Only encrypted payloads over anonymous routing
 
@@ -225,7 +193,9 @@ AnonChat layers three independent protections:
 
 - [ ] macOS build (build setup ready; not yet tested on a Mac)
 
-- [ ] Android app (native Kotlin, using the Anyone `anon` client for Android)
+- [ ] **Mailbox swarms** (planned): volunteer nodes that hold end-to-end encrypted blobs (queued messages and media) in per-contact mailboxes until the recipient is back online.
+
+- [ ] Android app (native Kotlin, using the Anyone `anon` client for Android). It depends on mailbox swarms: a phone is often unreachable, so it collects its messages from mailboxes instead
 
 - [x] Offline delivery: per-recipient retries, instant send when a contact writes, two-strike online status
 
