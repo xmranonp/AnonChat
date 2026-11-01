@@ -9,9 +9,10 @@ net = H.Net(['ana', 'bob'], env={'PRESENCE_INTERVAL_MS': '5000', 'PRESENCE_FIRST
 A, B = net.nodes['ana']['addr'], net.nodes['bob']['addr']
 def thread_texts(pg): return pg.evaluate("[...document.querySelectorAll('#conv-body .bubble-text')].map(e => e.textContent)")
 def idb_len(pg, key):
-    return pg.evaluate("""(k) => new Promise((res) => { const r = indexedDB.open('anonchat'); r.onsuccess = () => { const db = r.result; const names = [...db.objectStoreNames];
-      let found = null; let left = names.length; if (!left) res(null);
-      for (const n of names) { const tx = db.transaction(n); const g = tx.objectStore(n).get(k); g.onsuccess = () => { if (g.result != null) found = JSON.stringify(g.result).length; if (--left === 0) res(found); }; g.onerror = () => { if (--left === 0) res(found); }; } }; r.onerror = () => res('noidb'); })""", key)
+    # A chat is stored in chunks ('<field>#<n>') plus the field itself: its size is the sum of them.
+    return pg.evaluate("""(k) => new Promise((res) => { const r = indexedDB.open('anonchat'); r.onerror = () => res('noidb'); r.onsuccess = () => { const db = r.result;
+      const st = db.transaction('fields').objectStore('fields'); const all = st.getAll(), keys = st.getAllKeys();
+      all.onsuccess = () => { keys.onsuccess = () => { let n = null; keys.result.forEach((x, i) => { if (x === k || x.startsWith(k + '#')) n = (n || 0) + JSON.stringify(all.result[i]).length; }); res(n); }; }; }; })""", key)
 try:
     with sync_playwright() as pw:
         b = pw.chromium.launch(executable_path=_args.CHROME)

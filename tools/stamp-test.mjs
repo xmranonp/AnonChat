@@ -59,10 +59,11 @@ try {
   sock.on('message', (m) => { try { events.push(JSON.parse(String(m))); } catch {} });
   await new Promise((r) => { sock.on('open', r); sock.on('error', r); setTimeout(r, 2000); });
 
-  // Before the window has handed over any key: nothing claiming a contact or member is trusted or stored.
-  ok('contact, no key yet, no stamp: asked to retry, nothing stored', (await inbox(env(FRIEND, { size: big0 }))) === 503 && (await waiting(FRIEND)).stamped + (await waiting(FRIEND)).unstamped === 0);
-  ok('contact, no key yet, any stamp: same', (await inbox(env(FRIEND, { key: K_FRIEND }))) === 503);
-  ok('group member, no key yet: same', (await inbox(env(MEMBER))) === 503 && (await waiting(MEMBER)).stamped + (await waiting(MEMBER)).unstamped === 0);
+  // Before the window has handed over any key: nothing claiming a contact or member is trusted. F-4: the answer is the same 200 a
+  // stranger gets (a 503 would tell that the address is one of ours); the message is kept, unverified, for the window to read.
+  ok('contact, no key yet, no stamp: usual answer, kept unverified', (await inbox(env(FRIEND, { size: big0 }))) === 200 && (await waiting(FRIEND)).stamped === 0 && (await waiting(FRIEND)).unstamped === 1);
+  ok('contact, no key yet, any stamp: same', (await inbox(env(FRIEND, { key: K_FRIEND }))) === 200 && (await waiting(FRIEND)).stamped === 0 && (await waiting(FRIEND)).unstamped === 2);
+  ok('group member, no key yet: same', (await inbox(env(MEMBER))) === 200 && (await waiting(MEMBER)).stamped === 0 && (await waiting(MEMBER)).unstamped === 1);
   ok('a stranger is unaffected', (await inbox(env(OTHER))) === 200);
   await sleep(300);
   ok('the window is asked for the missing keys (once per address)', events.filter((e) => e.type === 'mailbox:missing' && e.address === FRIEND).length === 1
@@ -76,13 +77,13 @@ try {
   const big = big0;
   ok('once the key arrives, a stamped 600 KB message from the contact is kept (contact allowance)', (await inbox(env(FRIEND, { key: K_FRIEND, size: big }))) === 200 && (await waiting(FRIEND)).stamped === 1);
   await inbox(env(FRIEND, { size: big }));
-  ok('the same message claiming the contact without a stamp is treated as a stranger’s (too big: not kept)', (await waiting(FRIEND)).unstamped === 0);
+  ok('the same message claiming the contact without a stamp is treated as a stranger’s (too big: not kept)', (await waiting(FRIEND)).unstamped === 2);
   await inbox(env(FRIEND, { key: K_WRONG }));
   await inbox(env(FRIEND, { key: K_FRIEND, to: OTHER }));
-  ok('a wrong stamp, or one made for someone else, doesn’t count', (await waiting(FRIEND)).unstamped === 2, JSON.stringify(await waiting(FRIEND)));
+  ok('a wrong stamp, or one made for someone else, doesn’t count', (await waiting(FRIEND)).unstamped === 4, JSON.stringify(await waiting(FRIEND)));
   ok('a stamped group member’s 600 KB message is kept; an unstamped one isn’t',
     (await inbox(env(MEMBER, { key: K_MEMBER, size: big }))) === 200 && (await inbox(env(MEMBER, { size: big }))) === 200
-    && (await waiting(MEMBER)).stamped === 1 && (await waiting(MEMBER)).unstamped === 0);
+    && (await waiting(MEMBER)).stamped === 1 && (await waiting(MEMBER)).unstamped === 1);
 
   // Fill the stranger allowance for this address with unstamped claims (20 waiting at most), paced under the burst limit.
   for (let i = 0; i < 24; i++) { await inbox(env(FRIEND)); if (i % 4 === 3) await sleep(1100); }

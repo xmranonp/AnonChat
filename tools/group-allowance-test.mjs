@@ -38,16 +38,17 @@ try {
   await ui('/api/groups', 'POST', { id: 'g1', name: 'G', adminAddr: ME, members: [{ address: ME, petname: 'me' }, { address: MEMBER, petname: 'M' }] });
   const p1 = await ui('/api/peers', 'POST', { address: STRANGER });
   ok('/api/peers refuses someone in none of our groups', p1.status === 403, p1.status);
-  ok('a group member whose key we don\u2019t have yet is asked to retry (not trusted, not stored)', (await drop(MEMBER)) === 503 && (await count(MEMBER)) === 0);
+  // F-4: answered like everyone else (200), kept as unverified until the window hands over the key
+  ok('a group member whose key we don\u2019t have yet gets the usual answer and is kept, unverified', (await drop(MEMBER)) === 200 && (await count(MEMBER)) === 1);
   await ui('/api/mailbox-keys', 'POST', { replace: true, keys: [{ address: MEMBER, key: K_MEMBER }] });
   await ui('/api/settings', 'POST', { acceptRequests: false });
   await drop(MEMBER); await drop(STRANGER);
-  ok('requests off: a group member still gets through', (await count(MEMBER)) === 1);
+  ok('requests off: a group member still gets through', (await count(MEMBER)) === 2);
   ok('requests off: a stranger is dropped', (await count(STRANGER)) === 0);
   await ui('/api/settings', 'POST', { acceptRequests: true });
   for (let i = 0; i < 25; i++) await drop(STRANGER);
   ok('a stranger is capped at 20 waiting', (await count(STRANGER)) === 20, await count(STRANGER));
   for (let i = 0; i < 40; i++) await drop(MEMBER);
-  ok('a group member is not held to the stranger cap', (await count(MEMBER)) === 41, await count(MEMBER));
+  ok('a group member is not held to the stranger cap', (await count(MEMBER)) === 42, await count(MEMBER));
 } finally { srv.kill(); }
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);

@@ -67,6 +67,7 @@ const LIMITS = {
   strangerCount: 20,  strangerBytes: 2 * MB,      // one stranger
   strangersCount: 200, strangersBytes: 16 * MB,   // all strangers together
   peerCount: 300, peerBytes: 64 * MB,             // one group member who isn't a contact
+  pendingCount: 100, pendingBytes: 32 * MB,       // F-4: a contact or member just added, before the window hands over its key (unverified)
   contactBytes: 256 * MB,                         // one contact
   totalCount: parseInt(process.env.MAX_INBOX || '5000', 10), totalBytes: 1024 * MB,
 };
@@ -306,6 +307,7 @@ function peerRequestAllowed(headers) {
 const pub = express();
 // No 'trust proxy': nothing here reads req.ip (limits use the socket's own address), so forwarded-for headers are never parsed.
 pub.set('query parser', false);       // no peer route takes a query string
+pub.set('case sensitive routing', true);
 pub.disable('x-powered-by');
 pub.set('env', 'production');      // never Express's development error pages (stack traces), however the backend is started
 // The public port is taken at start, before anything else (see listenPublic), but nothing is accepted on it until every saved file has
@@ -403,10 +405,10 @@ pub.post('/api/inbox', (req, res) => {
   // Reject malformed from-addresses. The ratchet is the real authentication, so this is only an input check.
   if (!isValidAddr(cleanAddr(env.from))) return res.status(400).json({ error: 'bad from-address' });
 
-  // Replay check: ciphertexts seen in the last 24 h are rejected (in-memory, cleared on restart; the ratchet's consumed-key set is the persistent guard).
-  if (store.hasSeenEnvelope(env.ct)) {
-    return res.status(409).json({ error: 'duplicate envelope' });
-  }
+  // Replay check: ciphertexts seen in the last 24 h are not stored again (in-memory, cleared on restart; the ratchet's consumed-key set is
+  // the persistent guard). F-4: answered 200 like every other outcome below, so a repeat can't tell a stored message from a dropped one
+  // (and with it who our contacts are, or whom we blocked). Senders treat 200 and an older peer's 409 alike: delivered.
+  if (store.hasSeenEnvelope(env.ct)) return res.json({ ok: true });
 
   // The connection's own address. X-Forwarded-For is written by the sender and is never trusted: rotating it used to dodge the limit.
   // Everything through the Anyone network arrives from the local proxy, so for non-contacts this limit is shared by all of them.
@@ -466,11 +468,10 @@ pub.post('/api/inbox', (req, res) => {
     store.incrementBlocked();
     return res.json({ ok: true });
   }
-  if (missingKey) {
-    askWindowForKey(from);
-    res.set('Retry-After', '15');
-    return res.status(503).json({ error: 'retry later' });
-  }
+  // F-4: no key yet for a contact or member (just added): asking the sender to retry would tell that this address is one of ours. The
+  // message is kept instead, marked unverified like any unstamped claim, with room of its own for photos (LIMITS.pending*; answered 200
+  // when full, like a stranger's). The window is asked for the key, and the ratchet authenticates the message on reading as always.
+  if (missingKey) askWindowForKey(from);
 
   // What may wait in the inbox, in messages and bytes. The sender address is only a claim until the app decrypts, so every class has
   // its own budget and none can push out another's messages:
@@ -479,7 +480,7 @@ pub.post('/api/inbox', (req, res) => {
   //   contacts: a large budget of their own; over it, asked to retry later;
   //   everything together: a hard ceiling, beyond which senders retry (their apps keep the message) and nothing waiting is lost.
   const groupPeer = claimedPeer && !unverified;
-  if (!known && !groupPeer && settings.acceptRequests === false) { store.incrementBlocked(); return res.json({ ok: true }); }
+  if (!known && !groupPeer && !missingKey && settings.acceptRequests === false) { store.incrementBlocked(); return res.json({ ok: true }); }
   const exempt = new Set(contactList.map(c => c.address));
   for (const a of members) exempt.add(a);
   const u = store.inboxUsage(exempt, from, { unverified });
@@ -489,6 +490,8 @@ pub.post('/api/inbox', (req, res) => {
     if (u.fromBytes + size > LIMITS.contactBytes) return retryLater();
   } else if (groupPeer) {
     if (u.fromCount >= LIMITS.peerCount || u.fromBytes + size > LIMITS.peerBytes) return retryLater();
+  } else if (missingKey) {
+    if (u.fromCount >= LIMITS.pendingCount || u.fromBytes + size > LIMITS.pendingBytes) { store.incrementBlocked(); return res.json({ ok: true }); }
   } else {
     const over = size > LIMITS.strangerEnvelope
       || u.fromCount >= LIMITS.strangerCount || u.fromBytes + size > LIMITS.strangerBytes
@@ -504,7 +507,7 @@ pub.post('/api/inbox', (req, res) => {
   }
 
   // Recorded only now that it is accepted (see store.seenEnvelope); still checked, as two copies may have raced through the checks above.
-  if (store.seenEnvelope(env.ct)) return res.status(409).json({ error: 'duplicate envelope' });
+  if (store.seenEnvelope(env.ct)) return res.json({ ok: true });
   const stored = store.addToInbox({
     id: crypto.randomUUID(),
     from,
@@ -567,9 +570,11 @@ const ui = express();
 ui.disable('x-powered-by');
 ui.set('env', 'production');
 ui.set('query parser', 'simple');      // flat key=value only: the window never sends nested or array queries
+// Routes match only as written: /API/contacts must not reach the /api/contacts handler past a token check that compares case.
+ui.set('case sensitive routing', true);
 ui.use((req, res, next) => {
   if (!uiHostAllowed(req.headers)) return res.status(403).set('Connection', 'close').end();
-  // The desktop app's check that this really is its backend (desktop/main.js waitForReady): proves knowledge of the token without
+  // The desktop app's check that this really is its backend (desktop/backend-check.js): proves knowledge of the token without
   // receiving it. Reveals nothing else.
   if (req.method === 'GET' && req.path === '/api/hello') {
     const n = typeof req.query.n === 'string' && /^[0-9a-f]{32}$/.test(req.query.n) ? req.query.n : null;
@@ -582,7 +587,8 @@ ui.use((req, res, next) => {
     res.set('Cache-Control', 'no-store');
     return res.redirect(303, '/#t=' + req.query.t);
   }
-  if (req.path.startsWith('/api/')) {
+  // Any spelling of /api/ needs the token, whatever routing does with it (defence in depth with case-sensitive routing above).
+  if (/^\/api(\/|$)/i.test(req.path)) {
     if (!uiTokenPresent(req.headers)) return res.status(403).set('Connection', 'close').end();
     // Even with the token, a request that a browser says came from another site, or carries another origin, isn't ours.
     const site = req.headers['sec-fetch-site'];
@@ -934,6 +940,12 @@ ui.post('/api/identity', (req, res) => {
   const { ecdhPub, ratchetPub, ikSigPub, spkSig, name, avatar, bio } = req.body || {};
   if (!ecdhPub || !ratchetPub) return res.status(400).json({ error: 'missing public keys' });
   const existing = store.getIdentity() || {};
+  // The long-term identity key is never replaced here: a window that holds a different key (a second host name such as 127.0.0.1 next to
+  // localhost, or a vault that was lost) would otherwise swap it silently and every contact would see "safety number changed".
+  // A new identity starts only after Settings -> Erase everything (nothing stored) or a restore (which erases first, then /api/restore).
+  if (existing.ecdhPub && existing.ecdhPub !== ecdhPub) {
+    return res.status(409).json({ error: 'identity_exists' });
+  }
   store.setIdentity({
     ecdhPub,
     ratchetPub,

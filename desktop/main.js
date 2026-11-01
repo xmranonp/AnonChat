@@ -12,7 +12,8 @@ const { spawn } = require('child_process');
 const DEBUG_UI = !app.isPackaged;
 if (app.isPackaged) {
   delete process.env.ANONCHAT_DEBUG;
-  const bad = require('./debug-guard').refusedSwitch(process.argv.slice(1));
+  const guard = require('./debug-guard');
+  const bad = guard.refusedSwitch(process.argv.slice(1)) || guard.refusedParsedSwitch(app.commandLine);
   if (bad) {
     console.error(`AnonChat: the switch --${bad} is not allowed in the installed app (it would let other programs read the window).`);
     process.exit(2);
@@ -90,6 +91,10 @@ app.commandLine.appendSwitch('disable-component-update');
 app.commandLine.appendSwitch('disable-domain-reliability');
 app.commandLine.appendSwitch('disable-breakpad');
 app.commandLine.appendSwitch('disable-sync');
+// A-3: never use the system's proxy settings. Chromium's own requests would otherwise reach a configured proxy, which resolves names
+// itself, past host-resolver-rules above; the window only talks to 127.0.0.1, and the backend makes its own way through Anyone.
+app.commandLine.appendSwitch('no-proxy-server');
+const SPELLCHECK = process.platform === 'darwin';   // A-3: see app.whenReady
 
 const UI_PORT     = 47821;
 const PUBLIC_PORT = 47822;
@@ -164,6 +169,7 @@ function installMacMenu() {
 
 let backendChild = null;
 let backendPid   = null;
+let backendGone  = false;               // F-7: set once the backend we started has exited
 let proctree     = null;
 
 function spawnBackend(splash, dataKey) {
@@ -240,6 +246,7 @@ function spawnBackend(splash, dataKey) {
   child.on('exit', (code, sig) => {
     console.log('[backend] exited code=' + code + ' sig=' + sig);
     backendChild = null;
+    backendGone = true;                 // F-7: from now on the window sends nothing (and no token) to whatever holds the port next
     // Still on the start screen: say it stopped, instead of "connecting" for the next twelve minutes.
     if (!stopping && splash && !splash.isDestroyed()) {
       try { splash.webContents.send('backend-error', 'exit ' + (code != null ? code : sig)); } catch {}
@@ -271,51 +278,30 @@ function stopBackend() {
   return stopping;
 }
 
+// F-7: the launch token goes only over a connection whose other end has just proved it is our backend. Each check opens one connection,
+// asks /api/hello with a fresh challenge (answered with an HMAC keyed by the token, which only the backend we started knows), and only on
+// that same connection, once the answer is right, sends a request carrying the token. A program that takes the port at any moment (the
+// backend stopped, say) never receives the token: it can't answer the challenge, and the token is never sent on a connection it opened.
+const checkBackend = require('./backend-check').makeChecker({ port: UI_PORT, token: UI_TOKEN, header: UI_TOKEN_HEADER });
+
 function waitForReady(splash, onReady, onTimeout) {
   const start = Date.now();
   const MIN_SPLASH_MS = 5000;
   const MAX_WAIT_MS   = 12 * 60 * 1000;
-
-  // Before the launch token is sent anywhere, the server on the UI port must prove it is our backend: it answers a fresh random
-  // challenge with an HMAC keyed by the token, which only the backend we started knows. Another program that took the port first
-  // (M3) never sees the token, and the window is never shown its page.
-  let proven = false;
-  function prove(next) {
-    const nonce = require('crypto').randomBytes(16).toString('hex');
-    const want = require('crypto').createHmac('sha256', UI_TOKEN).update('anonchat-hello|' + nonce).digest('hex');
-    const req = http.get({ host: '127.0.0.1', port: UI_PORT, path: '/api/hello?n=' + nonce, timeout: 3000 }, (res) => {
-      let body = '';
-      res.on('data', (c) => { body += c; if (body.length > 4096) req.destroy(); });
-      res.on('end', () => {
-        let mac = null; try { mac = JSON.parse(body).mac; } catch {}
-        if (typeof mac === 'string' && mac.length === want.length && require('crypto').timingSafeEqual(Buffer.from(mac), Buffer.from(want))) { proven = true; next(); }
-        else { if (res.statusCode === 200) console.error('[main] the UI port answered, but not as our backend'); setTimeout(poll, 1000); }
-      });
-    });
-    req.on('error', () => setTimeout(poll, 1000));
-    req.on('timeout', () => { req.destroy(); setTimeout(poll, 1000); });
-  }
-
+  let warned = false;
   function poll() {
     if (!app.isReady()) return;
+    if (!backendChild) return;                    // F-7: the backend we started has stopped: nothing to wait for (the splash says so)
     if (Date.now() - start > MAX_WAIT_MS) { onTimeout && onTimeout(); return; }
-    if (!proven) return prove(poll);
-
-    const req = http.get({ host: '127.0.0.1', port: UI_PORT, path: '/api/whoami', timeout: 3000, headers: { [UI_TOKEN_HEADER]: UI_TOKEN } }, res => {
-      let body = '';
-      res.on('data', c => body += c);
-      res.on('end', () => {
-        if (body.includes('"address"') && body.includes('.anyone')) {
-          const elapsed = Date.now() - start;
-          const wait = Math.max(0, MIN_SPLASH_MS - elapsed);
-          setTimeout(onReady, wait);
-        } else {
-          setTimeout(poll, 1000);
-        }
-      });
+    checkBackend((r) => {
+      if (r.foreign && !warned) { warned = true; console.error('[main] the UI port answered, but not as our backend'); }
+      if (!r.ready) return setTimeout(poll, 1000);
+      // Ready. After the short minimum splash time, prove it once more right before the window opens and loads from the port.
+      setTimeout(() => {
+        if (!backendChild) return;
+        checkBackend((again) => (again.ready && backendChild ? onReady() : setTimeout(poll, 1000)));
+      }, Math.max(0, MIN_SPLASH_MS - (Date.now() - start)));
     });
-    req.on('error', () => setTimeout(poll, 1000));
-    req.on('timeout', () => { req.destroy(); setTimeout(poll, 1000); });
   }
   setTimeout(poll, 800);
 }
@@ -331,6 +317,7 @@ function createSplash() {
     backgroundColor: '#1A1A1A',
     webPreferences: {
       preload: path.join(__dirname, 'preload-splash.js'),
+      spellcheck: SPELLCHECK,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -362,6 +349,7 @@ function createMain() {
     title: 'AnonChat',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
+      spellcheck: SPELLCHECK,                      // A-3: no dictionary download on Linux and Windows
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -860,18 +848,23 @@ ipcMain.handle('use_os_vault', async (evt, arg) => {
 });
 
 app.whenReady().then(async () => {
+  // A-3: first thing, before any window (later is too late: the download starts at ready). On Linux and Windows Chromium's spell checker
+  // downloads Hunspell dictionaries from Google, so it is off there; macOS uses the system's own spell checker, which downloads nothing.
+  try { session.defaultSession.setSpellCheckerDictionaryDownloadURL('http://127.0.0.1:9/'); } catch {}
+  if (!SPELLCHECK) { try { session.defaultSession.setSpellCheckerEnabled(false); } catch {} }
   if (!gotLock) return;
   // Windows shows notifications only for an app with an identity; the installer registers this one (build.appId).
   if (process.platform === 'win32') { try { app.setAppUserModelId('network.anyone.anonchat'); } catch {} }
   installMacMenu();
   session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
+    if (backendGone && isUiServerUrl(details.url)) return cb({ cancel: true });
     const ok = isLocalUrl(details.url);
     if (!ok) console.error('[net-lock] blocked non-local request:', details.url.slice(0, 120));
     cb({ cancel: !ok });
   });
   // Every request the window makes to the UI server (page, assets, fetch, WebSocket upgrades) carries the launch token.
   session.defaultSession.webRequest.onBeforeSendHeaders((details, cb) => {
-    if (!isUiServerUrl(details.url)) return cb({ requestHeaders: details.requestHeaders });
+    if (!isUiServerUrl(details.url) || backendGone) return cb({ requestHeaders: details.requestHeaders });
     cb({ requestHeaders: { ...details.requestHeaders, [UI_TOKEN_HEADER]: UI_TOKEN } });
   });
 

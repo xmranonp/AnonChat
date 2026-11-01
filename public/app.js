@@ -44,8 +44,8 @@ const unreadContacts = new Map();
 const unreadSeparatorAt = new Map();
 function firstUnreadId(convKey, unreadCount) {
   if (!unreadCount || unreadCount <= 0) return null;
-  const thread = gatherThread(convKey);
-  if (unreadCount > thread.length) return thread[0]?.id || null;
+  const { list: thread, total } = gatherTail(convKey, unreadCount);
+  if (unreadCount > total) return thread[0]?.id || null;
   const m = thread[thread.length - unreadCount];
   return m ? m.id : null;
 }
@@ -213,6 +213,7 @@ function initSound() {
   function sync() {
     btn.innerHTML = soundEnabled ? _BELL_ON : _BELL_OFF;
     btn.title     = soundEnabled ? (t('sound.mute')) : (t('sound.unmute'));
+    btn.setAttribute('aria-label', btn.title);
     btn.classList.toggle('sound-off', !soundEnabled);
   }
   sync();
@@ -481,21 +482,93 @@ const fields = {
   keys() { return [...this.map.keys()]; },
   set(k, v) { this.map.set(k, v); return idbRun('fields', 'readwrite', (tx) => { tx.objectStore('fields').put(v, k); }); },
   delete(k) { this.map.delete(k); return idbRun('fields', 'readwrite', (tx) => { tx.objectStore('fields').delete(k); }); },
+  // Several writes and deletes in one transaction: all of them happen or none (a chat's chunks and the list that names them).
+  putMany(entries, deleteKeys = []) {
+    return idbRun('fields', 'readwrite', (tx) => {
+      const st = tx.objectStore('fields');
+      for (const [k, v] of entries) st.put(v, k);
+      for (const k of deleteKeys) st.delete(k);
+    }).then(() => { for (const [k, v] of entries) this.map.set(k, v); for (const k of deleteKeys) this.map.delete(k); });
+  },
+  // A chat's own field and its chunks ('<field>#<n>').
+  deleteThread(k) {
+    const all = [k, ...this.keys().filter((x) => x.startsWith(k + '#'))];
+    for (const x of all) this.map.delete(x);
+    return idbRun('fields', 'readwrite', (tx) => { for (const x of all) tx.objectStore('fields').delete(x); });
+  },
 };
 
 // One promise chain per key: encrypted writes to the same key run in submission order, so the latest value always wins.
 const persistQueues = new Map();
 
-function persistField(lsKey, value) {
+// Resolves true once the value is saved, false if it couldn't be (locked, or the write failed).
+function persistField(lsKey, value, from = 0) {
+  if (!pinKey) return Promise.resolve(false);   // locked: never persist plaintext
+  if (isThreadField(lsKey) && Array.isArray(value)) return persistThread(lsKey, value, from);
   const json = JSON.stringify(value);
-  if (!pinKey) return Promise.resolve();   // locked: never persist plaintext
   const prev = persistQueues.get(lsKey) || Promise.resolve();
   const next = prev.then(async () => {
     try {
       const { ct, iv } = await pinEncrypt(pinKey, json);
       await fields.set(lsKey, JSON.stringify({ __enc: 1, ct, iv }));
       storageSaved(lsKey, value);
-    } catch (e) { storageFailed(lsKey, value, e); }
+      return true;
+    } catch (e) { storageFailed(lsKey, value, e); return false; }
+  });
+  persistQueues.set(lsKey, next);
+  next.finally(() => { if (persistQueues.get(lsKey) === next) persistQueues.delete(lsKey); });
+  return next;
+}
+
+// A chat is stored in chunks of THREAD_CHUNK messages under '<field>#<n>', and the field itself holds only { v: 2, c, n }. One more message
+// rewrites the last chunk, not the whole history, so a chat of 50,000 messages costs what a short one does. `from` is the first message
+// that may have changed (appending: the new one); 0 means "any", and every chunk is written again. A chat saved the old way (one array) is
+// read as before and moves to chunks with its first write.
+const THREAD_CHUNK = 500;
+const threadState = new Map();       // field -> { chunks: how many are stored (null: unknown, write everything), dirtyFrom: first chunk a failed write left behind }
+function persistThread(lsKey, value, from) {
+  const n = value.length, nChunks = Math.ceil(n / THREAD_CHUNK);
+  const st = threadState.get(lsKey);
+  let first = Math.floor(Math.max(0, Math.min(from, n)) / THREAD_CHUNK);
+  if (!st || st.chunks == null) first = 0; else first = Math.min(first, st.chunks);
+  const parts = new Map();           // chunk number -> its JSON, taken now so later changes can't alter a write that is already queued
+  for (let i = first; i < nChunks; i++) parts.set(i, JSON.stringify(value.slice(i * THREAD_CHUNK, (i + 1) * THREAD_CHUNK)));
+  const prev = persistQueues.get(lsKey) || Promise.resolve();
+  const next = prev.then(async () => {
+    let wrote = first;
+    try {
+      const cur = threadState.get(lsKey) || { chunks: null };
+      // An earlier write of this chat failed: its chunks are written again from the newest copy.
+      if (cur.dirtyFrom != null && cur.dirtyFrom < wrote) {
+        for (let i = cur.dirtyFrom; i < wrote; i++) parts.set(i, JSON.stringify(value.slice(i * THREAD_CHUNK, (i + 1) * THREAD_CHUNK)));
+        wrote = cur.dirtyFrom;
+      }
+      if (cur.chunks == null && wrote > 0) {            // state lost meanwhile: everything again
+        for (let i = 0; i < wrote; i++) parts.set(i, JSON.stringify(value.slice(i * THREAD_CHUNK, (i + 1) * THREAD_CHUNK)));
+        wrote = 0;
+      }
+      const entries = [];
+      for (const [i, json] of parts) {
+        if (i < wrote) continue;
+        const { ct, iv } = await pinEncrypt(pinKey, json);
+        entries.push([lsKey + '#' + i, JSON.stringify({ __enc: 1, ct, iv })]);
+      }
+      const stale = [];
+      for (let i = nChunks; i < (cur.chunks ?? nChunks); i++) stale.push(lsKey + '#' + i);
+      if (cur.chunks == null) for (const k of fields.keys()) if (k.startsWith(lsKey + '#') && Number(k.slice(lsKey.length + 1)) >= nChunks) stale.push(k);
+      if (cur.chunks !== nChunks || cur.legacy) {       // the list changes only when the number of chunks does (or on the first write in this format)
+        const { ct, iv } = await pinEncrypt(pinKey, JSON.stringify({ v: 2, c: THREAD_CHUNK, n: nChunks }));
+        entries.push([lsKey, JSON.stringify({ __enc: 1, ct, iv })]);
+      }
+      await fields.putMany(entries, stale);
+      threadState.set(lsKey, { chunks: nChunks });
+      storageSaved(lsKey, value, wrote * THREAD_CHUNK);
+      return true;
+    } catch (e) {
+      const cur = threadState.get(lsKey) || { chunks: null };
+      threadState.set(lsKey, { chunks: cur.chunks, dirtyFrom: Math.min(cur.dirtyFrom ?? Infinity, wrote) });
+      storageFailed(lsKey, value, e); return false;
+    }
   });
   persistQueues.set(lsKey, next);
   next.finally(() => { if (persistQueues.get(lsKey) === next) persistQueues.delete(lsKey); });
@@ -508,11 +581,12 @@ function persistField(lsKey, value) {
 const unsavedIds = new Set();
 const lastSavedIds = new Map();      // thread field key -> ids in its last successful write
 let storageWarning = null;           // null | 'low' | 'full'
-function storageSaved(k, value) {
+function storageSaved(k, value, from = 0) {
   if (!isThreadField(k) || !Array.isArray(value)) return;
-  lastSavedIds.set(k, new Set(value.map((m) => m.id)));
+  let ids = lastSavedIds.get(k);
+  if (!ids || from === 0) { ids = new Set(); lastSavedIds.set(k, ids); from = 0; }
   let changed = false;
-  for (const m of value) if (unsavedIds.delete(m.id)) changed = true;
+  for (let i = from; i < value.length; i++) { const id = value[i].id; ids.add(id); if (unsavedIds.delete(id)) changed = true; }
   if (changed) { if (!unsavedIds.size && storageWarning === 'full') setStorageWarning(null); refreshOpenChat(); }
 }
 function storageFailed(k, value, err) {
@@ -708,11 +782,27 @@ async function loadEncryptedState() {
       if (r.corrupt) { corruptSessions.add(addr); corruptCount++; }
       else if (r.value) sessions.set(addr, r.value);
     } else if (k.startsWith(THREAD_FIELD_PREFIX)) {
+      if (k.includes('#')) continue;                 // a chunk: read together with its chat below
       const addr = prefs.names.map[tagOf(THREAD_FIELD_PREFIX)];
       if (!addr) continue;
       const r = await readFieldChecked(k, []);
-      if (r.corrupt) { corruptCount++; }
-      else { threadCache.set(addr, r.value); lastSavedIds.set(k, new Set((r.value || []).map((m) => m.id))); }
+      if (r.corrupt) { corruptCount++; continue; }
+      let msgs = r.value;
+      if (msgs && !Array.isArray(msgs) && msgs.v === 2) {         // chunked: { v: 2, c, n }, the messages in '<field>#0' ... '<field>#n-1'
+        const nn = Math.max(0, Number(r.value.n) || 0);
+        msgs = []; let bad = false;
+        for (let i = 0; i < nn; i++) {
+          const cr = await readFieldChecked(k + '#' + i, null);
+          if (cr.corrupt || !Array.isArray(cr.value)) { bad = true; break; }
+          for (const m of cr.value) msgs.push(m);
+        }
+        if (bad) { corruptCount++; continue; }
+        threadState.set(k, { chunks: r.value.n });
+      } else {
+        if (!Array.isArray(msgs)) msgs = [];
+        threadState.set(k, { chunks: null, legacy: true });      // saved the old way: the first write moves it to chunks
+      }
+      threadCache.set(addr, msgs); lastSavedIds.set(k, new Set(msgs.map((m) => m.id)));
     }
   }
   const reqR = await readFieldChecked(REQ_KEY, {});
@@ -735,7 +825,7 @@ function loadSession(addr) {
   if (sessions.has(addr)) return sessions.get(addr);
   return null;
 }
-function saveSession(addr, s) { sessions.set(addr, s); persistField(LS.session(addr), s); }
+function saveSession(addr, s) { sessions.set(addr, s); return persistField(LS.session(addr), s); }
 function loadThread(addr) {
   if (threadCache.has(addr)) return threadCache.get(addr);
   const t = [];
@@ -763,10 +853,12 @@ function isViewingThread(addr) {
   return open === addr && document.visibilityState === 'visible' && document.hasFocus();
 }
 
+// Where a message sits in a chat, searching from the newest end (0 if it isn't there: then the whole chat is written).
+const tailIndex = (th, m) => Math.max(0, th.lastIndexOf(m));
 function appendThread(addr, rec) {
   const t = loadThread(addr); t.push(rec);
   threadCache.set(addr, t);
-  persistField(LS.thread(addr), t);
+  persistField(LS.thread(addr), t, t.length - 1);       // only the newest chunk is written
   if (rec.dir === 'in' && !isViewingThread(addr)) {
     unreadContacts.set(addr, (unreadContacts.get(addr) || 0) + 1);
     if (addr.startsWith('grp:')) renderGroups(); else renderContacts();
@@ -852,7 +944,7 @@ async function deleteGroup(id) {
   groups = groups.filter(g => g.id !== id);
   prunePeers();
   threadCache.delete('grp:' + id);
-  fields.delete(LS.thread('grp:' + id)).catch(() => {});
+  fields.deleteThread(LS.thread('grp:' + id)).catch(() => {}); threadState.delete(LS.thread('grp:' + id));
   forgetThreadMedia('grp:' + id);
 }
 
@@ -1406,10 +1498,11 @@ async function ensureIdentity() {
   await publishIdentity();
 }
 async function publishIdentity() {
-  await fetch('/api/identity', {
+  const r = await fetch('/api/identity', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ecdhPub: ikPub, ratchetPub: spk.pub, ikSigPub: ikSig.pub, spkSig, avatar: myAvatar, bio: myBio }),
   });
+  if (r.status === 409) { toast(t('toast.identityConflict')); throw new Error('identity_exists'); }   // never carry on with keys the backend refused
 }
 
 // The signed prekey is replaced every week. A first message to us that is sent before we reply (a message request, or the first message
@@ -1919,7 +2012,7 @@ async function addContact(petname, address) {
 // their address against the one this session was made with, as for any request.
 async function removeContact(address, { keepSession = true } = {}) {
   await fetch('/api/contacts', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) });
-  fields.delete(LS.thread(address)).catch(() => {});
+  fields.deleteThread(LS.thread(address)).catch(() => {}); threadState.delete(LS.thread(address));
   forgetThreadMedia(address);
   threadCache.delete(address);
   if (!keepSession) { fields.delete(LS.session(address)).catch(() => {}); sessions.delete(address); corruptSessions.delete(address); }
@@ -2479,7 +2572,7 @@ async function resendOnAdoptedSession(contact, { ek, since }) {
     try {
       const r = await deliver(contact, encodeFrame('text', { mid: m.id, ttl, replyTo: m.replyTo || undefined }, te.encode(m.text)), { offlineTtl: offlineTtlFor(addr), msgId: m.id });
       const th = loadThread(addr), x = th.find((y) => y.id === m.id);
-      if (x) { if (r && r.queued) x.queueId = r.queueId; else delete x.pending; persistField(LS.thread(addr), th); }
+      if (x) { if (r && r.queued) x.queueId = r.queueId; else delete x.pending; persistField(LS.thread(addr), th, tailIndex(th, x)); }
     } catch {}
   }
   if (again.length && selected === addr && !selectedGroup) renderConversation();
@@ -2541,7 +2634,9 @@ async function deliver(contact, frameBytes, opts = {}) {
     const { header, ct } = await Ratchet.ratchetEncrypt(s, frameBytes);
     const e = { dh: header.dh, pn: header.pn, n: header.n, ct };
     if (s.pendingX3DH) e.x3dh = s.pendingX3DH;
-    saveSession(contact.address, s);
+    // F-5: the advanced chain is on disk before anything leaves. Otherwise a reload or crash would bring back the old chain step, and the
+    // next message would be encrypted again with the same key and nonce. A message whose step can't be saved is not sent.
+    if (!(await saveSession(contact.address, s))) throw new Error('could not save the session state');
     return e;
   });
   // The backend stamps the message with our shared mailbox key; make sure it has the key (a contact or member just added).
@@ -2780,7 +2875,7 @@ function finishGroupSend(gid, id, delivery) {
     .finally(() => {
       _groupSending.delete(id);
       const key = 'grp:' + gid, thread = loadThread(key), m = thread.find((x) => x.id === id);
-      if (m && m.pending) { delete m.pending; threadCache.set(key, thread); persistField(LS.thread(key), thread); }
+      if (m && m.pending) { delete m.pending; threadCache.set(key, thread); persistField(LS.thread(key), thread, tailIndex(thread, m)); }
       if (selectedGroup === gid) renderGroupConv();
     });
 }
@@ -3575,20 +3670,32 @@ async function poll() {
   } catch {}
 }
 
-function gatherThread(addr) {
+// The newest `limit` messages of a chat, oldest first, with expired ones dropped. A chat that is already in time order (nearly always) is
+// not copied or sorted as a whole: only the messages returned are, so a chat of 50,000 messages costs about what a short one does.
+// `total` is how many messages the chat holds, `hidden` how many older ones are not in the list.
+function gatherTail(addr, limit = Infinity) {
   const now = Date.now();
-  const raw = loadThread(addr);
-  const fresh = raw.filter(m => !m.expiresAt || m.expiresAt > now);
-  if (fresh.length !== raw.length) {
-    for (const m of raw) {
-      if (!fresh.find(x => x.id === m.id)) forgetMedia(m.id);
-    }
+  let raw = loadThread(addr);
+  let expired = false;
+  for (let i = 0; i < raw.length; i++) { const e = raw[i].expiresAt; if (e && e <= now) { expired = true; break; } }
+  if (expired) {
+    const fresh = raw.filter((m) => !m.expiresAt || m.expiresAt > now);
+    const keep = new Set(fresh.map((m) => m.id));
+    for (const m of raw) if (!keep.has(m.id)) forgetMedia(m.id);
+    raw = fresh;
     threadCache.set(addr, fresh);
     persistField(LS.thread(addr), fresh);
   }
-  loadThreadMedia(addr, fresh);
-  return fresh.map(m => ({ ...m, url: sessionUrls.get(m.id) || null })).sort((a, b) => a.ts - b.ts);
+  let ordered = true;
+  for (let i = 1; i < raw.length; i++) if (raw[i].ts < raw[i - 1].ts) { ordered = false; break; }
+  const src = ordered ? raw : [...raw].sort((x, y) => x.ts - y.ts);
+  const start = Math.max(0, src.length - limit);
+  const list = [];
+  for (let i = start; i < src.length; i++) { const m = src[i]; list.push({ ...m, url: sessionUrls.get(m.id) || null }); }
+  loadThreadMedia(addr, list);
+  return { list, total: src.length, hidden: start };
 }
+function gatherThread(addr) { return gatherTail(addr).list; }
 
 function sweepExpiredMessages() {
   const now = Date.now();
@@ -3622,10 +3729,75 @@ function formatDayHeader(ts) {
   return d.toLocaleDateString(getLang(), { day: 'numeric', month: 'short', year: today.getFullYear() === d.getFullYear() ? undefined : 'numeric' });
 }
 
-function buildBubbleNodes(thread, convKey) {
+// A long chat shows its newest RENDER_WINDOW messages; older ones are added RENDER_STEP at a time when the person scrolls up or presses
+// "Show earlier messages". A message that arrives is added to the end of what is on screen instead of drawing the whole list again.
+const RENDER_WINDOW = 200, RENDER_STEP = 200;
+const renderWindow = new Map();            // conversation key -> how many of the newest messages to show
+let _bodyState = null;                     // what #conv-body shows now: { key, total, lastId, lastDay, sepId, win, index, hidden }
+let _loadingEarlier = false;
+function dayStart(ts) { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); }
+function idIndex(convKey) {                // message id -> the first message with that id, over the whole chat (a reply may quote an old one)
+  const index = new Map();
+  for (const x of loadThread(convKey)) if (x && typeof x.id === 'string' && !index.has(x.id)) index.set(x.id, x);
+  return index;
+}
+// What the bubbles show about other people (names, pictures): when it changes, the list is drawn again instead of only extended.
+function peopleSig() {
+  let s = '';
+  for (const c of contacts) s += c.address + '\u0001' + (c.petname || '') + '\u0001' + (c.avatar ? c.avatar.length + c.avatar.slice(-12) : '') + '|';
+  for (const p of peers) s += p.address + '\u0001' + (p.avatar ? p.avatar.length + p.avatar.slice(-12) : '') + '|';
+  return s;
+}
+function fillConversationBody(body, convKey, emptyText) {
+  const sig = peopleSig();
+  const sepId = unreadSeparatorAt.get(convKey) || null;
+  let win = renderWindow.get(convKey) || RENDER_WINDOW;
+  let g = gatherTail(convKey, win);
+  // The "new messages" line must be on screen: widen the window until it is.
+  if (sepId && g.hidden > 0 && !g.list.some((m) => m.id === sepId)) {
+    const raw = loadThread(convKey), k = raw.findIndex((m) => m.id === sepId);
+    if (k >= 0) { win = Math.max(win, raw.length - k + 20); renderWindow.set(convKey, win); g = gatherTail(convKey, win); }
+  }
+  const { list, total, hidden } = g;
+  const st = _bodyState, last = list[list.length - 1], before = list[list.length - 2];
+  if (st && st.key === convKey && st.win === win && st.sepId === sepId && st.sig === sig && st.total + 1 === total && list.length >= 2 && before.id === st.lastId
+      && st.lastId != null && body.isConnected && body.childElementCount && !body.querySelector('.placeholder')) {
+    const nodes = [];
+    let prev = before;
+    if (dayStart(last.ts) !== st.lastDay) {
+      nodes.push(el('div', { className: 'day-divider' }, el('span', { className: 'day-divider-label', textContent: formatDayHeader(last.ts) })));
+      prev = null;
+    }
+    if (typeof last.id === 'string' && !st.index.has(last.id)) st.index.set(last.id, last);
+    const cont = !!(prev && last.grp && last.dir === 'in' && prev.grp && prev.dir === 'in' && prev.kind !== 'system' && last.kind !== 'system'
+      && last.senderAddr && prev.senderAddr === last.senderAddr);
+    nodes.push(renderBubble(last, st.index, cont));
+    for (const n of nodes) body.append(n);
+    st.total = total; st.lastId = last.id; st.lastDay = dayStart(last.ts);
+    return;
+  }
+  body.innerHTML = '';
+  if (!list.length) body.append(el('div', { className: 'placeholder small' }, el('p', { textContent: emptyText })));
+  if (hidden > 0) {
+    const more = el('button', { className: 'earlier-btn set-pill', type: 'button', textContent: t('conv.earlier', { n: hidden }) });
+    more.onclick = () => loadEarlier();
+    body.append(more);
+  }
+  const index = idIndex(convKey);
+  for (const node of buildBubbleNodes(list, convKey, index)) body.append(node);
+  _bodyState = { key: convKey, total, lastId: last ? last.id : null, lastDay: last ? dayStart(last.ts) : null, sepId, win, index, hidden, sig };
+}
+function loadEarlier() {
+  const key = selectedGroup ? ('grp:' + selectedGroup) : selected;
+  if (!key || !_bodyState || _bodyState.key !== key || !_bodyState.hidden || _loadingEarlier) return;
+  renderWindow.set(key, (renderWindow.get(key) || RENDER_WINDOW) + RENDER_STEP);
+  _loadingEarlier = true;
+  try { if (selectedGroup) renderGroupConv(); else renderConversation(); } finally { _loadingEarlier = false; }
+}
+function buildBubbleNodes(thread, convKey, indexIn) {
   const nodes = [];
-  const index = new Map();                 // message id -> the first message with that id in this conversation
-  for (const x of thread) if (x && typeof x.id === 'string' && !index.has(x.id)) index.set(x.id, x);
+  let index = indexIn;                     // message id -> the first message with that id in this conversation
+  if (!index) { index = new Map(); for (const x of thread) if (x && typeof x.id === 'string' && !index.has(x.id)) index.set(x.id, x); }
   let lastDay = null, prev = null;
   const sepId = convKey ? unreadSeparatorAt.get(convKey) : null;
   for (let i = 0; i < thread.length; i++) {
@@ -3795,12 +3967,7 @@ function renderGroupConv() {
   { const nb = ttlBadgeEl('grp:' + g.id); if (nb) hmeta.firstChild.append(nb); }
 
   head.append(avs, hmeta, makeLockPill(), grpManageBtn, grpMore);
-  renderBodyPreservingScroll(body, () => {
-    body.innerHTML = '';
-    const thread = gatherThread('grp:' + selectedGroup);
-    if (!thread.length) body.append(el('div', { className: 'placeholder small' }, el('p', { textContent: t('groups.empty') })));
-    for (const node of buildBubbleNodes(thread, 'grp:' + selectedGroup)) body.append(node);
-  });
+  renderBodyPreservingScroll(body, () => fillConversationBody(body, 'grp:' + selectedGroup, t('groups.empty')));
 }
 
 function withPreservedAudio(fn) {
@@ -3898,12 +4065,7 @@ function renderConversation() {
 
   head.append(avBtn, hmeta, makeLockPill(), callBtn, safeBtn, mapBtn, more);
   withPreservedAudio(() => {
-    renderBodyPreservingScroll(body, () => {
-      body.innerHTML = '';
-      const thread = gatherThread(selected);
-      if (!thread.length) body.append(el('div', { className: 'placeholder small' }, el('p', { textContent: t('conv.emptyThread') })));
-      for (const node of buildBubbleNodes(thread, selected)) body.append(node);
-    });
+    renderBodyPreservingScroll(body, () => fillConversationBody(body, selected, t('conv.emptyThread')));
   });
 }
 
@@ -3913,6 +4075,7 @@ function renderBodyPreservingScroll(body, buildFn) {
   const convKey = selectedGroup ? ('grp:' + selectedGroup) : selected;
   const switched = convKey !== _lastConvKey;
   _lastConvKey = convKey;
+  if (switched) { renderWindow.delete(convKey); _bodyState = null; }
   const wasNearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 120;
   const prevCount = body.querySelectorAll('.msg-row, .bubble, .msg').length;
   const prevTop = body.scrollTop;
@@ -3925,7 +4088,7 @@ function renderBodyPreservingScroll(body, buildFn) {
   } else {
     body.scrollTop = prevTop + (body.scrollHeight - prevHeight);
     const added = newCount - prevCount;
-    if (added > 0) _jumpUnseen += added;
+    if (added > 0 && !_loadingEarlier) _jumpUnseen += added;
   }
   updateJumpLatest();
 }
@@ -3961,6 +4124,7 @@ function wireJumpLatest() {
   const btn  = $('#jump-latest');
   if (!body || !btn) return;
   body.addEventListener('scroll', updateJumpLatest, { passive: true });
+  body.addEventListener('scroll', () => { if (body.scrollTop < 80 && _bodyState && _bodyState.hidden) loadEarlier(); }, { passive: true });
   btn.addEventListener('click', () => scrollConvToBottom(true));
 }
 
@@ -5802,8 +5966,32 @@ async function storeReadable() {
   return false;
 }
 
+// F-5: one window at a time. Two tabs would each load the same ratchet state, advance the same chain step and encrypt two messages with
+// the same key and nonce (AES-GCM then leaks both texts). The first tab holds a Web Lock for as long as it is open; another tab waits on
+// a notice and carries on by itself once the first one is closed. (The desktop app is one window anyway, and gets the lock at once.)
+async function oneWindow() {
+  if (!navigator.locks || typeof navigator.locks.request !== 'function') return true;
+  const hold = (lock) => (lock ? new Promise(() => {}) : null);            // kept until this page goes away
+  const got = await new Promise((resolve) => {
+    navigator.locks.request('anonchat-window', { ifAvailable: true }, (lock) => { resolve(!!lock); return hold(lock); }).catch(() => resolve(true));
+  });
+  if (got) return true;
+  const inner = $('#pin-screen').querySelector('.pin-inner');
+  const kept = document.createDocumentFragment();
+  while (inner.firstChild) kept.append(inner.firstChild);
+  inner.classList.add('store-error', 'other-tab');
+  inner.append(
+    el('img', { className: 'pin-logo', src: '/app-icon.png', alt: '', width: 56, height: 56 }),
+    el('h1', { className: 'store-error-title', textContent: t('tab.title') }),
+    el('p', { className: 'store-error-text', textContent: t('tab.text') }));
+  await new Promise((resolve) => { navigator.locks.request('anonchat-window', (lock) => { resolve(); return hold(lock); }).catch(() => {}); });
+  inner.innerHTML = ''; inner.classList.remove('store-error', 'other-tab'); inner.append(kept);
+  return true;
+}
+
 async function init() {
   initLang();
+  await oneWindow();
   if (!(await storeReadable())) return;
   try { await fields.open(); } catch (e) { console.error('[storage] database unavailable', e); }
   const isNewUser = await initPinScreen();
@@ -5972,8 +6160,9 @@ async function openSafetyDialog(contact, onVerified) {
   overlay.innerHTML = '';
   overlay.hidden = false;
 
-  const dialog = el('div', { className: 'safety-dialog' });
-  dialog.append(el('h3', { textContent: t('safety.dialogTitle', { name: contact.petname }) }));
+  const dialog = el('div', { className: 'safety-dialog', 'aria-modal': 'true', 'aria-labelledby': 'safety-title' });
+  dialog.setAttribute('role', 'dialog');
+  dialog.append(el('h3', { id: 'safety-title', textContent: t('safety.dialogTitle', { name: contact.petname }) }));
   dialog.append(el('p',  { className: 'safety-desc',
     textContent: t('safety.desc', { name: contact.petname }) }));
 
@@ -5993,7 +6182,10 @@ async function openSafetyDialog(contact, onVerified) {
 
   const actions = el('div', { className: 'confirm-actions' });
   const closeBtn = el('button', { className: 'confirm-cancel', type: 'button', textContent: t('nav.close') });
-  closeBtn.onclick = () => { overlay.hidden = true; };
+  const shutSafety = () => { overlay.hidden = true; document.removeEventListener('keydown', onSafetyKey); };
+  const onSafetyKey = (e) => { if (e.key === 'Escape') shutSafety(); };
+  document.addEventListener('keydown', onSafetyKey);
+  closeBtn.onclick = shutSafety;
 
   const isVerified = !!storedKey && storedKey === contact.ecdhPub;
   if (isVerified) {
@@ -6007,14 +6199,15 @@ async function openSafetyDialog(contact, onVerified) {
       prefs.verified[contact.address] = contact.ecdhPub || ''; savePrefs();
       toast(t('safety.markedVerified'));
       if (onVerified) onVerified();
-      overlay.hidden = true;
+      shutSafety();
     };
     actions.append(closeBtn, markBtn);
   }
   dialog.append(actions);
 
   overlay.append(dialog);
-  overlay.onclick = (e) => { if (e.target === overlay) overlay.hidden = true; };
+  overlay.onclick = (e) => { if (e.target === overlay) shutSafety(); };
+  closeBtn.focus();
 }
 
 async function openGroupManage(g) {
@@ -6481,7 +6674,7 @@ async function paintStorage(box) {
   }
   let msgBytes = 0;
   for (const k of fields.keys()) msgBytes += (fields.get(k) || '').length;
-  for (const [addr, t] of threadCache.entries()) { const x = perThread.get(addr) || { bytes: 0, media: 0 }; x.count = t.length; x.bytes += (fields.get(LS.thread(addr)) || '').length; perThread.set(addr, x); }
+  for (const [addr, t] of threadCache.entries()) { const x = perThread.get(addr) || { bytes: 0, media: 0 }; x.count = t.length; x.bytes += fields.keys().filter((k) => k === LS.thread(addr) || k.startsWith(LS.thread(addr) + '#')).reduce((n, k) => n + (fields.get(k) || '').length, 0); perThread.set(addr, x); }
   const mediaBytes = media.reduce((n, m) => n + (m.size || 0), 0);
   const est = await checkFreeSpace();
   const free = est && est.quota ? Math.max(0, est.quota - est.usage) : null;

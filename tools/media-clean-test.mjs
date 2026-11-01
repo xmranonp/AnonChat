@@ -86,18 +86,36 @@ ok(r && r.bytes[4] + (r.bytes[5] << 8) + (r.bytes[6] << 16) === r.bytes.length -
 const box = (t, ...p) => { const d = cat(...p); return cat(be32(8 + d.length), enc(t), d); };
 const full = (v, n) => cat(Uint8Array.of(v, 0, 0, 0), n);
 const times = Uint8Array.of(0xd2, 0xd2, 0xd2, 0xd2, 0xd2, 0xd2, 0xd2, 0xd3);
-const trak = (h, name) => box('trak', box('tkhd', full(0, cat(times, new Uint8Array(70)))), box('mdia', box('mdhd', full(0, cat(times, new Uint8Array(12)))), box('hdlr', full(0, cat(new Uint8Array(4), enc(h), new Uint8Array(12), enc(name)))), box('minf')), box('udta', box('\xa9xyz', enc('+48.8566+002.3522/'))));
-const mdatBytes = enc('PICTURE-AND-SOUND-DATA');
-const mp4 = cat(box('ftyp', enc('qt  '), new Uint8Array(4), enc('qt  ')),
-  box('moov', box('mvhd', full(0, cat(times, new Uint8Array(80)))), trak('vide', 'Core Media Video'), trak('soun', 'Sound'), trak('meta', 'GPS track'),
-    box('udta', box('\xa9mak', enc('Apple')), box('\xa9mod', enc('iPhone 16 Pro')), box('meta', enc('keys com.apple.quicktime.location'))), box('iods', new Uint8Array(8))),
-  box('uuid', enc('XMP-UUID-GPSsecret')), box('free', enc('leftover-text')), box('mdat', mdatBytes));
+// Each track has real sample tables (stsc / stsz / stco) pointing into mdat, as a camera writes them.
+const stbl = (off, sizes, co64) => box('stbl', box('stsd', full(0, be32(0))), box('stts', full(0, be32(0))),
+  box('stsc', full(0, cat(be32(1), be32(1), be32(sizes.length), be32(1)))),
+  box('stsz', full(0, cat(be32(0), be32(sizes.length), ...sizes.map(be32)))),
+  co64 ? box('co64', full(0, cat(be32(1), be32(0), be32(off)))) : box('stco', full(0, cat(be32(1), be32(off)))));
+const trak = (h, name, off = 0, sizes = [], co64 = false) => box('trak', box('tkhd', full(0, cat(times, new Uint8Array(70)))), box('mdia', box('mdhd', full(0, cat(times, new Uint8Array(12)))), box('hdlr', full(0, cat(new Uint8Array(4), enc(h), new Uint8Array(12), enc(name)))), box('minf', stbl(off, sizes, co64))), box('udta', box('\xa9xyz', enc('+48.8566+002.3522/'))));
+const VID = enc('PICTURE-DATA'), SND = enc('SOUND-DATA'), GPS = enc('GPS(48.858370,2.294481,35) 2026-10-31 14:03:11'), JUNK = enc('UNREFERENCED-leftover');
+const mdatBytes = cat(VID, SND, GPS, JUNK);
+const buildMp4 = (o = {}) => { let at = 0, out;
+  for (let pass = 0; pass < 2; pass++) {
+    out = cat(box('ftyp', enc('qt  '), new Uint8Array(4), enc('qt  ')),
+      box('moov', box('mvhd', full(0, cat(times, new Uint8Array(80)))), trak('vide', 'Core Media Video', at + (o.vidOff ?? 0), [6, VID.length - 6], o.co64), trak('soun', 'Sound', at + VID.length, [SND.length]),
+        trak('meta', 'GPS track', at + VID.length + SND.length, [GPS.length]), ...(o.frag ? [box('mvex', box('trex', full(0, new Uint8Array(20))))] : []),
+        box('udta', box('\xa9mak', enc('Apple')), box('\xa9mod', enc('iPhone 16 Pro')), box('meta', enc('keys com.apple.quicktime.location'))), box('iods', new Uint8Array(8))),
+      box('uuid', enc('XMP-UUID-GPSsecret')), box('free', enc('leftover-text')), box('mdat', mdatBytes));
+    at = out.length - mdatBytes.length; }
+  return out; };
+const mp4 = buildMp4();
+const mdatAt = mp4.length - mdatBytes.length;
 r = M.stripMp4(mp4);
 ok(r && r.bytes.length === mp4.length, 'mp4: same length (offsets stay valid)');
 ok(r && !['Apple', 'iPhone', 'GPS track', 'Core Media', 'GPSsecret', 'leftover', 'location', '+48.85'].some((s) => has(r.bytes, s)), 'mp4: make, model, location, handler names, uuid, free text gone');
-ok(r && has(r.bytes, 'PICTURE-AND-SOUND-DATA') && has(r.bytes, 'mdat') && has(r.bytes, 'vide') && has(r.bytes, 'soun'), 'mp4: media data and tracks kept');
+ok(r && has(r.bytes, 'mdat') && has(r.bytes, 'vide') && has(r.bytes, 'soun'), 'mp4: media data and tracks kept');
 ok(r && !has(r.bytes, Uint8Array.of(0xd2, 0xd2, 0xd2, 0xd2)), 'mp4: creation / modification times zeroed');
-ok(r && (() => { const a = mp4.length - mdatBytes.length - 8; return same(r.bytes.subarray(a), mp4.subarray(a)); })(), 'mp4: mdat byte for byte equal');
+ok(r && same(r.bytes.subarray(mdatAt, mdatAt + VID.length + SND.length), cat(VID, SND)), 'mp4: picture and sound samples byte for byte equal');
+ok(r && !has(r.bytes, 'GPS(') && !has(r.bytes, '2026-10-31') && !has(r.bytes, 'UNREFERENCED'), 'mp4 (A-4): samples of a GPS track and unreferenced bytes in mdat are zeroed');
+r = M.stripMp4(buildMp4({ co64: true }));
+ok(r && !has(r.bytes, 'GPS(') && has(r.bytes, 'PICTURE-DATA'), 'mp4 (A-4): 64-bit chunk offsets handled');
+ok(M.stripMp4(buildMp4({ frag: true })) === null, 'mp4 (A-4): a fragmented file with an extra track is refused');
+ok(M.stripMp4(buildMp4({ vidOff: 100000 })) === null, 'mp4 (A-4): samples pointing outside mdat are refused');
 ok(M.stripMp4(mp4.subarray(0, mp4.length - 5)) === null, 'mp4: a cut-off box is refused');
 
 // ---------- WebM ----------
@@ -106,13 +124,17 @@ const el = (idBytes, ...p) => { const d = cat(...p); return cat(Uint8Array.from(
 const webm = cat(el([0x1a, 0x45, 0xdf, 0xa3], el([0x42, 0x82], enc('webm'))),
   el([0x18, 0x53, 0x80, 0x67],
     el([0x15, 0x49, 0xa9, 0x66], el([0x2a, 0xd7, 0xb1], Uint8Array.of(0x0f, 0x42, 0x40)), el([0x4d, 0x80], enc('libwebm-secret')), el([0x57, 0x41], enc('Chrome-writer')), el([0x7b, 0xa9], enc('My private title')), el([0x44, 0x61], new Uint8Array(8).fill(4))),
-    el([0x16, 0x54, 0xae, 0x6b], el([0xae], el([0xd7], Uint8Array.of(1)), el([0x53, 0x6e], enc('Front camera track')))),
+    el([0x16, 0x54, 0xae, 0x6b], el([0xae], el([0xd7], Uint8Array.of(1)), el([0x83], Uint8Array.of(1)), el([0x53, 0x6e], enc('Front camera track'))),
+      el([0xae], el([0xd7], Uint8Array.of(2)), el([0x83], Uint8Array.of(17)), el([0x86], enc('S_TEXT/UTF8')), el([0x53, 0x6e], enc('DJI-SRT')))),
     el([0x12, 0x54, 0xc3, 0x67], el([0x73, 0x73], el([0x45, 0xa3], enc('LOCATION')))),
-    el([0x1f, 0x43, 0xb6, 0x75], el([0xe7], Uint8Array.of(0)), el([0xa3], enc('FRAMEDATA')))));
+    el([0x1f, 0x43, 0xb6, 0x75], el([0xe7], Uint8Array.of(0)), el([0xa3], Uint8Array.of(0x81, 0, 0, 0x80), enc('FRAMEDATA')),
+      el([0xa0], el([0xa1], Uint8Array.of(0x82, 0, 0, 0), enc('GPS(48.858370,2.294481) HOME')), el([0x9b], Uint8Array.of(10))),
+      el([0xa3], Uint8Array.of(0x82, 0, 0, 0x80), enc('GPS-simple-block')))));
 r = M.stripWebm(webm);
 ok(r && r.bytes.length === webm.length, 'webm: same length');
 ok(r && !['libwebm-secret', 'Chrome-writer', 'My private title', 'Front camera', 'LOCATION'].some((s) => has(r.bytes, s)), 'webm: writer, title, track name, tags gone');
 ok(r && has(r.bytes, 'FRAMEDATA') && has(r.bytes, 'webm'), 'webm: frames and doc type kept');
+ok(r && !has(r.bytes, 'GPS(') && !has(r.bytes, 'GPS-simple') && !has(r.bytes, 'DJI-SRT') && !has(r.bytes, 'S_TEXT'), 'webm (A-4): subtitle track entry and all its blocks gone');
 ok(M.stripWebm(webm.subarray(0, webm.length - 6)) === null, 'webm: a cut-off element is refused');
 
 // ---------- MP3 ----------

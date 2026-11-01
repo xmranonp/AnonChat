@@ -31,6 +31,12 @@ try {
   r = await req('/api/whoami', { 'x-anonchat-token': tok, origin: 'http://localhost:9999' }); ok(r.s === 403, 'a foreign Origin is refused even with the token', r.s);
   r = await req('/api/whoami', { cookie: `anonchat_ui_${UI}=${tok}; anonchat_ui=${tok}`, 'x-anonchat-token': '' }); ok(r.s === 403, 'a cookie no longer counts', r.s);
   r = await req('/api/whoami', { 'x-anonchat-token': tok, host: 'evil.example' }); ok(r.s === 403 || r.s === 400, 'a foreign Host is refused', r.s);
+  // A-1: any spelling of /api/ needs the token, and routes match only as written.
+  for (const p of ['/API/whoami', '/Api/contacts', '/aPI/identity/secret', '/API/backup/hs', '/api/WHOAMI', '/API/whoami/', '/API', '/api']) {
+    r = await req(p); ok(r.s === 403, `${p} without the token: refused`, r.s);
+  }
+  r = await req('/api/WHOAMI', { 'x-anonchat-token': tok }); ok(r.s === 404, 'with the token, a differently spelled route is not found (no case folding)', r.s);
+  r = await req('/API/whoami', { 'x-anonchat-token': tok }); ok(r.s === 404, 'with the token, /API/whoami is not found either', r.s);
   r = await req(`/?t=${tok}`); ok(r.s === 303 && r.h.location === `/#t=${tok}` && !r.h['set-cookie'], 'old ?t= links move the token into the fragment', [r.s, r.h.location]);
   ok((await ws(['anonchat', 'anonchat.' + tok])) === 'open:anonchat', 'WebSocket with the token as sub-protocol connects (plain "anonchat" is selected)');
   ok((await ws(['anonchat', 'anonchat.' + 'e'.repeat(64)])) === 'refused', 'WebSocket with a wrong token is refused');

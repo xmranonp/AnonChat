@@ -2,7 +2,7 @@
 # Stages everything the desktop build bundles:
 #   desktop/resources/app/      server.js, start.js, package.json, lib/, public/, app_modules/
 #   desktop/resources/runtime/  node (portable runtime) and anon
-# Usage: ANON_BIN=~/anon-v0.4.10.2/anon ./prepare-resources.sh   (the binary must be listed in anon-sha256.txt)
+# Usage: ANON_BIN=~/anon-v0.4.10.4-beta/anon ./prepare-resources.sh   (the binary must be listed in anon-sha256.txt)
 # Runs on Linux (for the .deb / pacman builds) and macOS (for the .dmg); the Node runtime matches this machine's OS and CPU.
 
 set -euo pipefail
@@ -17,7 +17,7 @@ echo "    project root: $PROJECT_ROOT"
 echo "    resources:    $RES"
 
 if [[ -z "${ANON_BIN:-}" ]]; then
-  echo "!! ANON_BIN is required. Download anon v0.4.10.2+ from" >&2
+  echo "!! ANON_BIN is required. Download anon v0.4.10.4-beta or newer from" >&2
   echo "   https://github.com/anyone-protocol/ator-protocol/releases" >&2
   echo "   then: ANON_BIN=/path/to/anon ./prepare-resources.sh" >&2
   exit 1

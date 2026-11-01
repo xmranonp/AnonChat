@@ -47,7 +47,7 @@
           <img class="brand-logo" src="/app-icon.png" alt="" width="34" height="34">
           <div class="brand-title">
             <span class="brand-name"><b>Anon</b>Chat</span>
-            <span class="brand-version">v1.0.0</span>
+            <span class="brand-version">v1.0.4</span>
           </div>
           <span class="net-dot" id="ws-dot" aria-hidden="true"></span>
         </div>
@@ -164,7 +164,7 @@
       </div>
       <div id="conv-head"></div>
       <div id="call-dock" hidden></div>
-      <div id="conv-body"></div>
+      <div id="conv-body" role="log" aria-live="polite" aria-relevant="additions"></div>
       <button id="jump-latest" type="button" hidden aria-label="Jump to the latest message" title="Jump to the latest message" data-i18n-attr="title:nav.jumpLatest,aria-label:nav.jumpLatest">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
       </button>
@@ -275,7 +275,7 @@
   </dialog>
 
   <input type="file" id="avatar-input" accept="image/*" hidden />
-  <div id="toast"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
 
   <script type="module" src="app.js"></script>
 </body>

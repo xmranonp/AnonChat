@@ -249,18 +249,73 @@ export function stripMp4(src) {
       o = c.end;
     }
   };
+  // A-4: the samples of the tracks that are kept (video, sound) are the only bytes of the media data that stay. Everything else in
+  // 'mdat' (the samples of location, subtitle and timed-metadata tracks, or bytes no track points to) is zeroed. Blanking a track's index
+  // alone is not enough: its samples (a drone's GPS log, a dashcam's speed and position) would still be in the file.
+  const child = (bx, type) => { for (let o = bx.o + bx.hdr; o < bx.end;) { const c = boxAt(o, bx.end); if (!c) return null; if (c.type === type) return c; o = c.end; } return null; };
+  const keptRanges = [];
+  const samplesOf = (trak) => {                                        // -> true, or false when the tables cannot be read safely
+    const mdia = child(trak, 'mdia'), minf = mdia && child(mdia, 'minf'), stbl = minf && child(minf, 'stbl');
+    if (!stbl) return false;
+    const stsc = child(stbl, 'stsc'), stsz = child(stbl, 'stsz'), stco = child(stbl, 'stco'), co64 = child(stbl, 'co64');
+    if (!stsc || !stsz || (!stco && !co64)) return false;               // no compact 'stz2': rare, and refused rather than guessed
+    const zo = stsz.o + stsz.hdr; if (zo + 12 > stsz.end) return false;
+    const fixed = u32be(b, zo + 4), count = u32be(b, zo + 8);
+    if (!fixed && zo + 12 + 4 * count > stsz.end) return false;
+    const sizeOf = (i) => fixed || u32be(b, zo + 12 + 4 * i);
+    const co = stco || co64, oo = co.o + co.hdr; if (oo + 8 > co.end) return false;
+    const chunks = u32be(b, oo + 4), w = stco ? 4 : 8;
+    if (oo + 8 + w * chunks > co.end) return false;
+    const offOf = (i) => { if (stco) return u32be(b, oo + 8 + 4 * i); if (u32be(b, oo + 8 + 8 * i)) return -1; return u32be(b, oo + 12 + 8 * i); };
+    const so = stsc.o + stsc.hdr; if (so + 8 > stsc.end) return false;
+    const runs = u32be(b, so + 4); if (so + 8 + 12 * runs > stsc.end) return false;
+    let sample = 0;
+    for (let r = 0; r < runs; r++) {
+      const first = u32be(b, so + 8 + 12 * r), per = u32be(b, so + 12 + 12 * r);
+      const last = r + 1 < runs ? u32be(b, so + 8 + 12 * (r + 1)) - 1 : chunks;
+      if (first < 1 || last > chunks || last + 1 < first) return false;
+      for (let c = first; c <= last; c++) {
+        const at = offOf(c - 1); if (at < 0) return false;
+        let len = 0;
+        for (let k = 0; k < per; k++) { if (sample >= count) return false; len += sizeOf(sample++); }
+        if (len) { if (at + len > b.length) return false; keptRanges.push([at, at + len]); }
+      }
+    }
+    return sample === count;
+  };
+  let removed = 0, fragmented = false;
+  const mdats = [];
   for (let o = 0; o < b.length;) {
     const bx = boxAt(o, b.length); if (!bx) return null;
     if (bx.type === 'moov') {
       for (let p = bx.o + bx.hdr; p < bx.end;) {
         const c = boxAt(p, bx.end); if (!c) return null;
         if (c.type === 'mvhd') zeroTimes(c);
-        else if (c.type === 'trak') { const h = handlerOf(c); if (h === 'vide' || h === 'soun') walkTrakParts(c); else wipe(c); }   // location / timed-metadata tracks go
+        else if (c.type === 'mvex') fragmented = true;
+        else if (c.type === 'trak') {
+          const h = handlerOf(c);
+          if (h === 'vide' || h === 'soun') { if (!samplesOf(c)) return null; walkTrakParts(c); }
+          else { removed++; wipe(c); }                                                                   // location / timed-metadata tracks go
+        }
         else if (c.type === 'udta' || c.type === 'meta' || c.type === 'iods') wipe(c);
         p = c.end;
       }
-    } else if (!ISO_TOP_KEEP.has(bx.type)) wipe(bx);                                                   // uuid, XMP_, meta, free/skip padding, thumbnails, ...
+    } else if (bx.type === 'moof') fragmented = true;
+    else if (bx.type === 'mdat') mdats.push(bx);
+    else if (!ISO_TOP_KEEP.has(bx.type)) wipe(bx);                                                   // uuid, XMP_, meta, free/skip padding, thumbnails, ...
     o = bx.end;
+  }
+  if (fragmented) {
+    // Samples of a fragmented file are listed per fragment; a file whose extra tracks cannot be cut out safely is not sent.
+    if (removed) return null;
+  } else {
+    keptRanges.sort((x, y) => x[0] - y[0]);
+    for (const [s0, e0] of keptRanges) if (!mdats.some((m) => s0 >= m.o + m.hdr && e0 <= m.end)) return null;   // samples outside 'mdat': not ours to guess
+    for (const m of mdats) {
+      let at = m.o + m.hdr;
+      for (const [s0, e0] of keptRanges) { if (e0 <= at || s0 >= m.end) continue; if (s0 > at) b.fill(0, at, s0); at = Math.max(at, e0); }
+      if (at < m.end) b.fill(0, at, m.end);
+    }
   }
   if (!ok) return null;
   return { bytes: b, format: 'mp4' };
@@ -290,27 +345,50 @@ export function stripWebm(src) {
   };
   const DROP_SEG = new Set([0x1254c367, 0x1043a770, 0x1941a469]);                        // Tags, Chapters, Attachments
   const KEEP_INFO = new Set([0x2ad7b1, 0x4489]);                                         // TimecodeScale, Duration
-  let sawSegment = false;
-  for (let o = 0; o < b.length;) {
-    const e = el(o, b.length); if (!e || e.end > b.length) return null;
-    if (e.id === 0x18538067) {                                                           // Segment
-      sawSegment = true;
-      for (let p = e.o + e.hdr; p < e.end;) {
-        const c = el(p, e.end); if (!c || c.end > e.end) return null;
-        if (c.id === 0x1f43b675 && c.unknown) return null;                              // live streams cannot be walked safely
-        if (DROP_SEG.has(c.id)) { if (!voidIt(c)) return null; }
-        else if (c.id === 0x1549a966) {                                                  // Info
-          for (let q = c.o + c.hdr; q < c.end;) { const d = el(q, c.end); if (!d || d.end > c.end) return null; if (!KEEP_INFO.has(d.id) && !voidIt(d)) return null; q = d.end; }
-        } else if (c.id === 0x1654ae6b) {                                                // Tracks -> TrackEntry -> Name
-          for (let q = c.o + c.hdr; q < c.end;) { const d = el(q, c.end); if (!d || d.end > c.end) return null;
-            if (d.id === 0xae) for (let r = d.o + d.hdr; r < d.end;) { const f = el(r, d.end); if (!f || f.end > d.end) return null; if (f.id === 0x536e && !voidIt(f)) return null; r = f.end; }
-            q = d.end; }
+  const uint = (e) => { let v = 0; for (let k = e.o + e.hdr; k < e.end; k++) v = v * 256 + b[k]; return v; };
+  const vint = (o) => { const f = b[o]; if (!f) return null; let n = 1; while (!(f & (0x80 >> (n - 1)))) n++; if (n > 8) return null; let v = f & (0xff >> n); for (let k = 1; k < n; k++) v = v * 256 + b[o + k]; return v; };
+  // A-4: only video (1) and audio (2) tracks stay. The entries of other tracks (subtitles, where drones keep GPS; metadata) are voided,
+  // and so is every block of theirs in the clusters. Tracks are read first, wherever they are, then the clusters.
+  const segments = [];
+  for (let o = 0; o < b.length;) { const e = el(o, b.length); if (!e || e.end > b.length) return null; if (e.id === 0x18538067) segments.push(e); o = e.end; }
+  if (!segments.length) return null;
+  const dropped = new Set(), kept = new Set();
+  for (const e of segments) for (let p = e.o + e.hdr; p < e.end;) {
+    const c = el(p, e.end); if (!c || c.end > e.end) return null;
+    if (c.id === 0x1f43b675 && c.unknown) return null;                                  // live streams cannot be walked safely
+    if (c.id === 0x1654ae6b) {                                                           // Tracks -> TrackEntry
+      for (let q = c.o + c.hdr; q < c.end;) { const d = el(q, c.end); if (!d || d.end > c.end) return null;
+        if (d.id === 0xae) {
+          let num = null, type = null;
+          for (let r = d.o + d.hdr; r < d.end;) { const f = el(r, d.end); if (!f || f.end > d.end) return null; if (f.id === 0xd7) num = uint(f); else if (f.id === 0x83) type = uint(f); r = f.end; }
+          if (num === null) return null;
+          if (type === 1 || type === 2) {
+            kept.add(num);
+            for (let r = d.o + d.hdr; r < d.end;) { const f = el(r, d.end); if (f.id === 0x536e && !voidIt(f)) return null; r = f.end; }   // Name
+          } else { dropped.add(num); if (!voidIt(d)) return null; }
         }
-        p = c.end;
-      }
+        q = d.end; }
     }
-    o = e.end;
+    p = c.end;
   }
+  if (!kept.size) return null;
+  const blockTrack = (blk) => vint(blk.o + blk.hdr);                                     // a Block / SimpleBlock starts with its track number
+  for (const e of segments) for (let p = e.o + e.hdr; p < e.end;) {
+    const c = el(p, e.end); if (!c || c.end > e.end) return null;
+    if (DROP_SEG.has(c.id)) { if (!voidIt(c)) return null; }
+    else if (c.id === 0x1549a966) {                                                      // Info
+      for (let q = c.o + c.hdr; q < c.end;) { const d = el(q, c.end); if (!d || d.end > c.end) return null; if (!KEEP_INFO.has(d.id) && !voidIt(d)) return null; q = d.end; }
+    } else if (c.id === 0x1f43b675) {                                                    // Cluster -> SimpleBlock / BlockGroup
+      for (let q = c.o + c.hdr; q < c.end;) { const d = el(q, c.end); if (!d || d.end > c.end) return null;
+        let t = null;
+        if (d.id === 0xa3) t = blockTrack(d);
+        else if (d.id === 0xa0) { for (let r = d.o + d.hdr; r < d.end;) { const f = el(r, d.end); if (!f || f.end > d.end) return null; if (f.id === 0xa1) t = blockTrack(f); r = f.end; } if (t === null) t = -1; }
+        if (t !== null && !kept.has(t) && !voidIt(d)) return null;                        // a block of a dropped (or unknown) track
+        q = d.end; }
+    }
+    p = c.end;
+  }
+  const sawSegment = true;
   if (!sawSegment) return null;
   return { bytes: b, format: 'webm' };
 }

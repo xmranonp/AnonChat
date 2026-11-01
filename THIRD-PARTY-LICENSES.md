@@ -29,7 +29,7 @@ components alongside this notice.
 - **Inter** © The Inter Project Authors (https://github.com/rsms/inter), **Noto Sans Devanagari** © The Noto Project Authors (https://github.com/notofonts/devanagari) and **IBM Plex Mono** © IBM Corp. (https://github.com/IBM/plex), all under the **SIL Open Font License 1.1** (texts in `public/fonts/`). Shipped as script subsets (WOFF) so the interface looks the same on every system.
 
 ### Anyone Protocol `anon` daemon — `desktop/resources/runtime/anon[.exe]`
-- Version v0.4.10.2 · https://github.com/anyone-protocol
+- Version v0.4.10.4-beta · https://github.com/anyone-protocol
 - A fork of **Tor**; license: **BSD 3-Clause** © The Tor Project, Inc. and
   contributors. Provides the onion transport / hidden-service layer. Shipped as
   an unmodified upstream binary staged at build time (not part of this source

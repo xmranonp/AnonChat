@@ -2389,3 +2389,6 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .ctest-verdict.warn { box-shadow: inset 3px 0 0 var(--live); }
 .ctest-dialog .confirm-actions button:disabled { opacity: .5; cursor: default; }
 @media (max-width: 420px) { .ctest-row { grid-template-columns: 18px minmax(0, 1fr); } .ctest-value { grid-column: 2; text-align: left; } }
+
+/* "Show earlier messages" at the top of a long chat */
+#conv-body .earlier-btn { align-self: center; margin: 2px 0 6px; }

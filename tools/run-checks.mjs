@@ -12,7 +12,7 @@ const pass = m => console.log('  \x1b[32m✓\x1b[0m ' + m);
 const fail = m => { failures++; console.log('  \x1b[31m✗ ' + m + '\x1b[0m'); };
 
 console.log('\n1. Syntax');
-const cjs = ['server.js', 'start.js', 'desktop/main.js', 'desktop/keystore.js', 'desktop/filename.js', 'desktop/debug-guard.js', 'desktop/preload.js',
+const cjs = ['server.js', 'start.js', 'desktop/main.js', 'desktop/keystore.js', 'desktop/filename.js', 'desktop/debug-guard.js', 'desktop/backend-check.js', 'desktop/preload.js',
              'desktop/preload-splash.js', ...readdirSync(join(root, 'lib'))
                .filter(f => f.endsWith('.js')).map(f => 'lib/' + f)];
 for (const f of cjs) {
@@ -335,12 +335,26 @@ try {
   (m && m[2] === '0') ? pass(`media cleaning ${m[1]}/${m[1]}`) : fail('media cleaning: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('media cleaning — ' + ((e.stdout?.toString().match(/FAIL .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
-console.log('\n39. The installed app refuses debugging switches and ignores ANONCHAT_DEBUG');
+console.log('\n39. The installed app refuses debugging switches in every spelling and ignores ANONCHAT_DEBUG');
 try {
   const out = execFileSync('node', [join(root, 'tools/debug-guard-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
   const m = out.match(/(\d+) passed, (\d+) failed/);
   (m && m[2] === '0') ? pass(`debug guard ${m[1]}/${m[1]}`) : fail('debug guard: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('debug guard — ' + ((e.stdout?.toString().match(/FAIL .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n40. The inbox answers the same whoever a message claims to be from: contact, group member, blocked, or stranger (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/inbox-oracle-test.mjs')], { stdio: 'pipe', timeout: 300000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`inbox answers ${m[1]}/${m[1]}`) : fail('inbox answers: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('inbox answers — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n41. The desktop app sends its token only to a backend that proved itself on the same connection (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/backend-check-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`start-screen check ${m[1]}/${m[1]}`) : fail('start-screen check: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('start-screen check — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);
