@@ -1,0 +1,11 @@
+# One line-ending style in every checkout, so a Windows clone matches Linux (some checks and the shell scripts need LF).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.mp3 binary
+*.gz binary
+*.zip binary

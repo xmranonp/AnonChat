@@ -36,7 +36,7 @@ try {
 
 console.log('\n3. i18n parity');
 try {
-  const s = readFileSync(join(root, 'public/i18n.js'), 'utf8');
+  const s = readFileSync(join(root, 'public/i18n.js'), 'utf8').replace(/\r\n/g, '\n');       // a Windows checkout may have CRLF line ends
   const a = s.indexOf('const STRINGS = ') + 'const STRINGS = '.length;
   const b = s.indexOf('\n};\n', a) + 2;
   const T = new Function('return ' + s.slice(a, b))();

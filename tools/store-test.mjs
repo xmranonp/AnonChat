@@ -111,7 +111,7 @@ console.log('Leftovers of an interrupted write');
 }
 {
   // server.js's note of when an address was last checked stays at 2000, forgetting the oldest first.
-  const src = readFileSync(join(root, 'server.js'), 'utf8');
+  const src = readFileSync(join(root, 'server.js'), 'utf8').replace(/\r\n/g, '\n');       // a Windows checkout may have CRLF line ends
   const i = src.indexOf('function noteCheck'); const fn = src.slice(i, src.indexOf('\n}\n', i) + 2);
   const noteCheck = new Function(fn + '\nreturn noteCheck;')();
   const m = new Map();

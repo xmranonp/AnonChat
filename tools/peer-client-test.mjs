@@ -12,7 +12,7 @@ import zlib from 'node:zlib';
 const root = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const require = createRequire(join(root, 'server.js'));
 const axios = require('axios');
-const src = readFileSync(join(root, 'server.js'), 'utf8');
+const src = readFileSync(join(root, 'server.js'), 'utf8').replace(/\r\n/g, '\n');       // a Windows checkout may have CRLF line ends
 const i0 = src.indexOf('const PEER_DEADLINE_MS'), i = src.indexOf('function onion()');
 const fnSrc = src.slice(i0, src.indexOf('\n}\n', i) + 2);           // the deadline wrapper and onion() itself
 const MAX_ENVELOPE = Number(eval(/^const MAX_ENVELOPE\s*=\s*([^;]+);/m.exec(src)[1]));

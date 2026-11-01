@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const APP = process.argv[2] || join(fileURLToPath(new URL('.', import.meta.url)), '..');
-const src = readFileSync(join(APP, 'public/app.js'), 'utf8');
+const src = readFileSync(join(APP, 'public/app.js'), 'utf8').replace(/\r\n/g, '\n');       // a Windows checkout may have CRLF line ends
 const grab = (name) => { const i = src.indexOf('function ' + name); return src.slice(i, src.indexOf('\n}\n', i) + 2); };
 const render = new Function(grab('mdEscape') + '\n' + grab('renderMarkdownText').replace('return emojify(s);', 'return s;') + '\nreturn renderMarkdownText;')();
 const tmp = join(mkdtempSync(join(tmpdir(), 'render-')), 'fingerprint.mjs');
