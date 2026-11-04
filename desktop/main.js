@@ -721,7 +721,7 @@ ipcMain.handle('key-submit', (evt, data) => {
 });
 
 async function obtainDataKey(splash) {
-  const vault = keystore.vaultAvailable(safeStorage);
+  let vault = await keystore.vaultAvailable(safeStorage);
   let ks;
   try { ks = keystore.load(DATA_ROOT); }
   catch (e) {
@@ -731,9 +731,11 @@ async function obtainDataKey(splash) {
   if (!ks) {                                        // first start, or the first start after this update
     const dk = keystore.newDataKey();
     if (vault) {
-      keystore.wrapOs(DATA_ROOT, safeStorage, dk);
-      keyMode = 'os';
-    } else {
+      // The vault can still refuse to give real protection (only Chromium's fixed key on offer): then a passphrase, as without a keyring.
+      try { await keystore.wrapOs(DATA_ROOT, safeStorage, dk); keyMode = 'os'; }
+      catch (e) { console.error('[keystore] the system vault cannot be used:', e && e.message); vault = false; }
+    }
+    if (!vault) {
       let error = null;
       for (;;) {
         const a = await askSplash(splash, { mode: 'choose', reason: 'nokeyring', error, min: keystore.MIN_PASSPHRASE });
@@ -748,8 +750,8 @@ async function obtainDataKey(splash) {
     DATA_KEY = dk;
   } else if (ks.mode === 'os') {
     if (!vault) { await keyFailure(splash, 'novault'); throw new Error('vault unavailable'); }
-    try { DATA_KEY = keystore.unwrapOs(ks, safeStorage); }
-    catch (e) { await keyFailure(splash, 'vault'); throw e; }
+    try { DATA_KEY = await keystore.unwrapOs(ks, safeStorage, DATA_ROOT); }
+    catch (e) { console.error('[keystore] unlock failed:', e && e.message); await keyFailure(splash, 'vault'); throw e; }
     keyMode = 'os';
   } else {
     let error = null, tries = 0;
@@ -790,11 +792,11 @@ async function eraseBeforeStart() {
 
 // For the window: how the data key is kept, and the window's share of it. Only the main window, only from our own page.
 function fromMainWindow(evt) { return mainWin && !mainWin.isDestroyed() && evt.sender === mainWin.webContents; }
-ipcMain.handle('security_info', (evt) => {
+ipcMain.handle('security_info', async (evt) => {
   if (!fromMainWindow(evt) || !DATA_KEY) return null;
   return {
     mode: keyMode,
-    vault: keystore.vaultAvailable(safeStorage) ? keystore.vaultName(safeStorage) : null,
+    vault: (await keystore.vaultAvailable(safeStorage)) ? keystore.vaultName(safeStorage) : null,
     windowKey: keystore.windowKey(DATA_KEY).toString('base64'),
     minPassphrase: keystore.MIN_PASSPHRASE,
   };
@@ -838,12 +840,12 @@ ipcMain.handle('verify_passphrase', async (evt, pass) => {
 // Settings: back to the OS vault (the PIN unlocks the app again). From passphrase mode, only with the passphrase in use now.
 ipcMain.handle('use_os_vault', async (evt, arg) => {
   if (!fromMainWindow(evt) || !DATA_KEY) return { error: 'denied' };
-  if (!keystore.vaultAvailable(safeStorage)) return { error: 'novault' };
+  if (!(await keystore.vaultAvailable(safeStorage))) return { error: 'novault' };
   if (keyMode === 'passphrase') {
     const c = await checkCurrentPassphrase(arg && typeof arg === 'object' ? arg.current : null);
     if (!c.ok) return c;
   }
-  try { keystore.wrapOs(DATA_ROOT, safeStorage, DATA_KEY); keyMode = 'os'; return { ok: true }; }
+  try { await keystore.wrapOs(DATA_ROOT, safeStorage, DATA_KEY); keyMode = 'os'; return { ok: true }; }
   catch { return { error: 'failed' }; }
 });
 

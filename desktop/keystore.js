@@ -51,11 +51,19 @@ function save(dir, ks) {
   fs.renameSync(tmp, file(dir));
 }
 
+// Electron 45 deprecates the synchronous safeStorage calls (isEncryptionAvailable, encryptString, decryptString) and removes them in 46.
+// The asynchronous ones are used whenever they exist; the synchronous ones remain only as a fallback for an Electron without them.
+// Data wrapped by the old calls is opened by the new ones (Electron documents this), so existing keystores keep working.
+function hasAsync(s) {
+  return !!s && typeof s.isAsyncEncryptionAvailable === 'function' && typeof s.encryptStringAsync === 'function' && typeof s.decryptStringAsync === 'function';
+}
+
 // Is there a real vault? On Linux, safeStorage falls back to a fixed built-in key ("basic_text") when no keyring is running: that is not
 // protection, so it counts as no vault.
-function vaultAvailable(safeStorage) {
+async function vaultAvailable(safeStorage) {
   try {
-    if (!safeStorage.isEncryptionAvailable()) return false;
+    const available = hasAsync(safeStorage) ? await safeStorage.isAsyncEncryptionAvailable() : safeStorage.isEncryptionAvailable();
+    if (!available) return false;
     if (process.platform === 'linux') {
       const b = typeof safeStorage.getSelectedStorageBackend === 'function' ? safeStorage.getSelectedStorageBackend() : 'unknown';
       return b !== 'basic_text' && b !== 'unknown';
@@ -77,14 +85,92 @@ function vaultName(safeStorage) {
 
 function newDataKey() { return crypto.randomBytes(32); }
 
-function wrapOs(dir, safeStorage, dk) {
-  const wrapped = safeStorage.encryptString(dk.toString('hex'));
-  save(dir, { v: 1, mode: 'os', wrapped: wrapped.toString('base64'), at: Date.now() });
+// On Linux, Chromium marks with "v10" what it encrypted with its fixed built-in key (the "basic_text" fallback): no protection at all. The
+// asynchronous call can do that even when the synchronous one uses the keyring ("v11"), so its answer is checked before it is kept.
+function weakBlob(b) { return process.platform === 'linux' && Buffer.from(b).subarray(0, 3).toString('latin1') === 'v10'; }
+// The key wrapped by the vault: the asynchronous call when it gives real protection, otherwise the synchronous one (Electron 45), otherwise
+// an error (no keystore is written that a fixed key opens).
+async function osWrap(safeStorage, hex) {
+  if (hasAsync(safeStorage)) {
+    try { const b = Buffer.from(await safeStorage.encryptStringAsync(hex)); if (!weakBlob(b)) return { blob: b, async: true }; } catch {}
+  }
+  if (typeof safeStorage.encryptString === 'function') {
+    const b = Buffer.from(safeStorage.encryptString(hex));
+    if (!weakBlob(b)) return { blob: b, async: false };
+  }
+  throw new Error('the system vault would only use a fixed key');
 }
-function unwrapOs(ks, safeStorage) {
-  const hex = safeStorage.decryptString(Buffer.from(ks.wrapped, 'base64'));
-  if (!/^[0-9a-f]{64}$/.test(hex)) throw new Error('vault returned an invalid key');
-  return Buffer.from(hex, 'hex');
+async function wrapOs(dir, safeStorage, dk) {
+  const { blob } = await osWrap(safeStorage, dk.toString('hex'));
+  save(dir, { v: 1, mode: 'os', wrapped: blob.toString('base64'), at: Date.now() });
+}
+// The data key. Order of attempts, so that a key the vault can still give is never refused:
+//   1. the asynchronous call on `wrapped` (the only call left in Electron 46);
+//   2. the synchronous call on `wrapped` (how 1.0.4 wrapped it: on Linux, Electron 45's asynchronous call cannot always open that);
+//   3. the same two on `prev`, the earlier wrapping kept by a migration.
+// When only a synchronous call worked, the key is wrapped again with the asynchronous call (see migrate), so that Electron 46 can open it.
+// When the vault says the wrapping is out of date, it is wrapped again in place. Re-wrapping that fails changes nothing.
+async function unwrapOs(ks, safeStorage, dir) {
+  const isKey = (h) => typeof h === 'string' && /^[0-9a-f]{64}$/.test(h);
+  const why = [];
+  const viaAsync = async (blob, tag) => {
+    if (!hasAsync(safeStorage)) return null;
+    try {
+      let r = await safeStorage.decryptStringAsync(blob);
+      let hex = r && r.result; const stale = !!(r && r.shouldReEncrypt);
+      if (stale && !isKey(hex)) { r = await safeStorage.decryptStringAsync(blob); hex = r && r.result; }   // asked again only when unusable
+      if (isKey(hex)) return { hex, stale };
+      why.push(tag + ' async: answer is not a key');
+    } catch (e) { why.push(tag + ' async: ' + (e && e.message || e)); }
+    return null;
+  };
+  const viaSync = (blob, tag) => {
+    if (typeof safeStorage.decryptString !== 'function') return null;
+    try { const hex = safeStorage.decryptString(blob); if (isKey(hex)) return { hex, stale: false }; why.push(tag + ' sync: answer is not a key'); }
+    catch (e) { why.push(tag + ' sync: ' + (e && e.message || e)); }
+    return null;
+  };
+  const blob = Buffer.from(ks.wrapped, 'base64');
+  let got = await viaAsync(blob, 'wrapped'), via = 'async';
+  if (!got) {
+    got = viaSync(blob, 'wrapped'); via = 'sync';
+    if (got) { try { console.warn('[keystore] asynchronous unlock did not work (' + why.join('; ') + '); using the synchronous call'); } catch {} }
+  }
+  if (!got && typeof ks.prev === 'string' && ks.prev) {
+    const pb = Buffer.from(ks.prev, 'base64');
+    got = (await viaAsync(pb, 'prev')) || viaSync(pb, 'prev'); via = 'prev';
+  }
+  if (!got) {
+    const err = new Error('vault returned an invalid key (' + (why.join('; ') || 'no answer') + ')');
+    try { console.error('[keystore] ' + err.message); } catch {}
+    throw err;
+  }
+  const dk = Buffer.from(got.hex, 'hex');
+  if (dir) {
+    try {
+      if (via === 'async' && (got.stale || weakBlob(blob))) await wrapOs(dir, safeStorage, dk);   // out of date, or only a fixed key: wrapped again properly
+      else if (via === 'async' && ks.prev) save(dir, { v: 1, mode: 'os', wrapped: ks.wrapped, at: ks.at || Date.now() });   // the new wrapping opened by itself: `prev` is done
+      else if (via !== 'async') {
+        const moved = await migrate(dir, ks, safeStorage, dk, via === 'prev' ? ks.prev : ks.wrapped);
+        if (!moved && via === 'prev') save(dir, { v: 1, mode: 'os', wrapped: ks.prev, at: Date.now() });   // keep the wrapping that works
+      }
+    } catch {}
+  }
+  return dk;
+}
+// Wraps the key with the asynchronous call, but only if that wrapping is read back to the same key right now. The earlier wrapping is kept
+// as `prev` (opened by unwrapOs if the new one ever fails), and the original file is copied once to keystore.json.pre-async.bak.
+async function migrate(dir, ks, safeStorage, dk, goodBlob) {
+  if (!hasAsync(safeStorage)) return false;
+  const hex = dk.toString('hex');
+  const blob2 = Buffer.from(await safeStorage.encryptStringAsync(hex));
+  if (weakBlob(blob2)) { try { console.warn('[keystore] not migrating: the asynchronous call would use a fixed key, not the keyring'); } catch {} return false; }
+  const r = await safeStorage.decryptStringAsync(blob2);
+  if (!r || r.result !== hex) return false;                             // does not read back: leave the keystore as it is
+  const bak = file(dir) + '.pre-async.bak';
+  if (!fs.existsSync(bak)) fs.copyFileSync(file(dir), bak);
+  save(dir, { v: 1, mode: 'os', wrapped: blob2.toString('base64'), prev: goodBlob, at: Date.now() });
+  return true;
 }
 
 function deriveFromPassphrase(pass, salt) {
@@ -98,6 +184,8 @@ async function wrapPassphrase(dir, pass, dk) {
   const ct = Buffer.concat([c.update(dk), c.final()]);
   save(dir, { v: 1, mode: 'passphrase', kdf: { name: 'scrypt', N: SCRYPT.N, r: SCRYPT.r, p: SCRYPT.p, salt: salt.toString('base64') },
     iv: iv.toString('base64'), tag: c.getAuthTag().toString('base64'), ct: ct.toString('base64'), at: Date.now() });
+  // The copy kept by a migration holds the key wrapped by the OS vault: left behind, it would open the data without the passphrase.
+  try { fs.unlinkSync(file(dir) + '.pre-async.bak'); } catch {}
 }
 // The data key, or null for a wrong passphrase.
 async function unwrapPassphrase(ks, pass) {
