@@ -24,3 +24,7 @@ desktop/dist/
 .vscode/
 *.log
 npm-debug.log*
+
+# Python bytecode (made by running the browser tests)
+__pycache__/
+*.pyc
