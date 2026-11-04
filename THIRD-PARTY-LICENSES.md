@@ -62,9 +62,9 @@ components alongside this notice.
 
 | Package | Version | License |
 |---|---|---|
-| express | 4.21.2 | MIT |
-| axios | 1.18.1 | MIT |
-| ws | 8.22.0 | MIT |
+| express | 4.22.3 | MIT |
+| axios | 1.21.0 | MIT |
+| ws | 8.22.1 | MIT |
 | socks-proxy-agent | 8.0.5 | MIT |
 
 (Transitive dependencies are resolved via the committed lockfiles; `path-to-regexp`
@@ -76,7 +76,7 @@ licenses.)
 
 | Tool | Version | License |
 |---|---|---|
-| Electron | 42.4.1 | MIT |
+| Electron | 45.2.2 | MIT |
 | electron-builder | ^26.15.4 | MIT |
 
 ---

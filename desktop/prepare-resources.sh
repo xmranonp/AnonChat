@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$HERE/.." && pwd)"
 RES="$HERE/resources"
-NODE_VERSION="${NODE_VERSION:-24.22.1}"   # 24.22.1+: Node security release of 21 Oct 2026 (CVE-2026-111497, Brotli decoder)
+NODE_VERSION="${NODE_VERSION:-24.22.2}"   # 24.22.1+ carries the Node security release of 21 Oct 2026 (CVE-2026-111497, Brotli decoder); 24.22.2 is the current patch
 
 echo "==> AnonChat resource staging"
 echo "    project root: $PROJECT_ROOT"

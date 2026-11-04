@@ -19,7 +19,7 @@ $ErrorActionPreference = "Stop"
 $Here        = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $Here
 $Res         = Join-Path $Here "resources"
-$NodeVersion = if ($env:NODE_VERSION) { $env:NODE_VERSION } else { "24.22.1" }   # 24.22.1+: Node security release of 21 Oct 2026 (CVE-2026-111497, Brotli decoder)
+$NodeVersion = if ($env:NODE_VERSION) { $env:NODE_VERSION } else { "24.22.2" }   # 24.22.1+ carries the Node security release of 21 Oct 2026 (CVE-2026-111497, Brotli decoder); 24.22.2 is the current patch
 
 Write-Host "==> AnonChat resource staging (Windows)"
 Write-Host "    project root: $ProjectRoot"
