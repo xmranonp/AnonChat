@@ -51,7 +51,7 @@ export function fingerprintSVG(address, size = 40, name = '') {
 
   const cr = Math.round(size * 0.5);
 
-  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="avatar">
+  return `<svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
   <defs>
     <linearGradient id="${id}" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="${c1}"/>

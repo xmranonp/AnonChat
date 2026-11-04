@@ -627,7 +627,7 @@ ui.get('/api/whoami', async (_req, res) => {
     storeOk: health.ok, storeProblems: health.problems, encryptedAtRest: store.atRest().encrypted });
 });
 
-// Manual only, and only through the Anyone proxy. There is no direct fallback: if the network is unreachable the check fails and nothing leaves the Anyone network.
+// Manual, or at start when the person turned that on (public/app.js, off by default), and only through the Anyone proxy. There is no direct fallback: if the network is unreachable the check fails and nothing leaves the Anyone network.
 const updater = require('./lib/updater');
 const PKG = (() => {
   try { return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')); }

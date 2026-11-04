@@ -1087,7 +1087,7 @@ label.grp-member-row {
   background: var(--err); border-color: var(--err); color: #fff;
 }
 .confirm-actions .confirm-ok.danger:hover { background: #B91C1C; border-color: #B91C1C; }
-.confirm-actions .confirm-cancel:focus { outline: 2px solid rgba(var(--signal-rgb),0.4); outline-offset: 1px; }
+.confirm-actions .confirm-cancel:focus-visible { outline: 2px solid rgba(var(--signal-rgb),0.4); outline-offset: 1px; }
 
 :root.light .confirm-dialog { background: #FFFFFF; border-color: #E2E2E5; box-shadow: var(--shadow-lg); }
 
@@ -2392,3 +2392,25 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 
 /* "Show earlier messages" at the top of a long chat */
 #conv-body .earlier-btn { align-self: center; margin: 2px 0 6px; }
+
+/* Update window and the start-up check switch */
+.upd-note { margin: -2px 0 14px; padding: 9px 11px; font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); }
+.upd-dialog {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  padding: 20px 22px; width: min(460px, calc(100vw - 32px)); color: var(--text); box-shadow: var(--shadow-lg);
+}
+.upd-win-head { display: flex; align-items: center; gap: 12px; }
+.upd-win-head img { flex: none; }
+.upd-win-head h3 { margin: 0; font-size: 16px; }
+.upd-win-sub { margin-top: 2px; font-size: 12px; color: var(--muted); }
+.upd-win-label { margin: 16px 0 6px; font-size: 12px; color: var(--muted); }
+.upd-win-link { display: flex; align-items: center; gap: 10px; background: var(--ink); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 7px 10px; }
+.upd-win-url { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--data); font-size: 11.5px; line-height: 1.45; color: var(--signal); }
+.upd-win-copy { flex: none; padding: 2px 4px 2px 10px; border: none; border-left: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.upd-win-copy:disabled { color: rgb(var(--ok-rgb)); cursor: default; }
+.upd-win-note { margin-top: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.55; color: var(--text-dim); background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--r-md); }
+.upd-win-note p { margin: 0; }
+.upd-win-note p + p { margin-top: 8px; }
+.upd-win-note strong { color: var(--text); }
+.upd-dialog .confirm-ok { background: var(--signal); border-color: var(--signal); color: var(--on-signal); font-weight: 600; }
+.upd-dialog .confirm-ok:hover { filter: brightness(1.08); background: var(--signal); }

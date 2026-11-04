@@ -11,7 +11,7 @@ for x in ('server.js', 'start.js', 'package.json', 'lib', 'public'):
     s = os.path.join(APP, x); (shutil.copytree if os.path.isdir(s) else shutil.copy)(s, os.path.join(d, x))
 if os.path.exists(os.path.join(APP, 'node_modules')): os.symlink(os.path.realpath(os.path.join(APP, 'node_modules')), os.path.join(d, 'node_modules'))
 with open(os.path.join(d, 'public', 'app.js'), 'a') as f:
-    f.write("\nwindow.__p = { loadThread, persistField, appendThread, deleteMessage, clearThread, renderConversation, LS, threadCache, fields, pinEncrypt, persistQueues, get pinKey() { return pinKey; }, get selected() { return selected; } };\n")
+    f.write("\nwindow.__p = { loadThread, persistField, appendThread, deleteMessage, clearThread, renderConversation, LS, threadCache, fields, pinEncrypt, persistQueues, dropThread, get pinKey() { return pinKey; }, get selected() { return selected; } };\n")
 net = H.Net(['ana', 'bob'], apps={'ana': d})
 A = {n: net.nodes[n]['addr'] for n in net.nodes}
 FILL = """async (n) => { const P = window.__p, addr = P.selected, t = P.loadThread(addr);
@@ -72,6 +72,34 @@ try:
         H.check('clearing the chat leaves the list and no chunks', s['len'] == 0 and s['keys'] == [''], s)
         reopen(ana); s = ana.evaluate(STATE)
         H.check('and it stays empty after a reload', s['len'] == 0, s)
+        # R-3 (the chat was cleared just before, so it starts empty): a flood of saves of one chat becomes a few writes, not one per message, and nothing is lost.
+        ana.evaluate("() => { const P = window.__p; P.__writes = 0; const orig = P.fields.putMany.bind(P.fields); P.fields.putMany = (...a) => { P.__writes++; return orig(...a); }; }")
+        t0 = time.time()
+        ana.evaluate("() => { const P = window.__p; for (let i = 0; i < 400; i++) P.appendThread(P.selected, { id: 'f' + i, dir: 'in', kind: 'text', text: 'flood ' + i, ts: Date.now() + i, verified: true }); }")
+        settle(ana); s = ana.evaluate(STATE); w = ana.evaluate("() => window.__p.__writes")
+        H.check('400 messages arriving at once cost a handful of writes, not 400', 1 <= w <= 4, w)
+        H.check('...and every one is stored, in order, with the right chunks', s['len'] == 400 and s['last'] == 'flood 399' and s['keys'] == ['', '#0'], s)
+        r = ana.evaluate("""async () => { const P = window.__p, k = P.LS.thread(P.selected); const calls = [];
+          const a = P.persistField(k, P.loadThread(P.selected), 0); const b = P.persistField(k, P.loadThread(P.selected), 0); const c = P.persistField(k, P.loadThread(P.selected), 0);
+          return [await a, await b, await c]; }""")
+        H.check('every caller gets its answer (true) when its saves are merged', r == [True, True, True], r)
+        reopen(ana); s = ana.evaluate(STATE)
+        H.check('after a reload the flood is all there', s['len'] == 400 and s['last'] == 'flood 399', s)
+        # Deleting a chat (contact removed, group deleted) while saves of it are queued: nothing of it comes back to the disk.
+        r = ana.evaluate("""async () => { const P = window.__p, k = P.LS.thread(P.selected);
+          for (let i = 0; i < 300; i++) P.appendThread(P.selected, { id: 'd' + i, dir: 'in', kind: 'text', text: 'doomed ' + i, ts: Date.now() + 1000 + i, verified: true });
+          P.dropThread(k);
+          await Promise.allSettled([...P.persistQueues.values()]); await new Promise((r) => setTimeout(r, 300));
+          return P.fields.keys().filter((x) => x === k || x.startsWith(k + '#')); }""")
+        H.check('a chat deleted while its saves are queued stays deleted on disk', r == [], r)
+        r = ana.evaluate("""async () => { const P = window.__p, k = P.LS.thread(P.selected);
+          for (let i = 0; i < 50; i++) P.appendThread(P.selected, { id: 'e' + i, dir: 'in', kind: 'text', text: 'again ' + i, ts: Date.now() + 5000 + i, verified: true });
+          P.dropThread(k);
+          const t = [{ id: 'n1', dir: 'in', kind: 'text', text: 'after re-adding', ts: Date.now() + 9000, verified: true }];
+          P.threadCache.set(P.selected, t); const ok = await P.persistField(k, t, 0);
+          await Promise.allSettled([...P.persistQueues.values()]); await new Promise((r) => setTimeout(r, 300));
+          return [ok, P.fields.keys().filter((x) => x === k || x.startsWith(k + '#')).length]; }""")
+        H.check('a save made after the deletion (contact added again) is kept', r[0] is True and r[1] == 2, r)
         H.check('no page errors', not [e for e in H.errs if 'map' not in e.lower()], H.errs[:3])
         H.summary()
         b.close()

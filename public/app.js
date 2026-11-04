@@ -188,8 +188,15 @@ function primeAudioOnce() {
   });
 }
 
-function playNotification() {
+// A burst of messages plays the sound once, not once per message: a flood of 2,000 used up Chromium's audio players and filled the log with
+// errors (R-2). Turning the sound on in the bell button plays it at once (force).
+const SOUND_GAP_MS = 3000;
+let _lastSound = 0;
+function playNotification(force = false) {
   if (!soundEnabled || _audioFatal) return;
+  const now = Date.now();
+  if (!force && now - _lastSound < SOUND_GAP_MS) return;
+  _lastSound = now;
   try {
     const base = _ensureAudio();
     // Play a fresh clone each time: one shared element can't restart while it is playing, so back-to-back sounds would be dropped.
@@ -204,6 +211,9 @@ function playNotification() {
 const _BELL_ON  = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`;
 const _BELL_OFF = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
 
+// The bell's name says what pressing it does (mute or unmute): set from its state here, again on every language change (initLang), never
+// from a fixed attribute, which would name a muted bell "Mute".
+let _syncSoundBtn = null;
 function initSound() {
   const btn = $('#sound-btn');
   const primeHandler = () => { primeAudioOnce(); };
@@ -216,13 +226,31 @@ function initSound() {
     btn.setAttribute('aria-label', btn.title);
     btn.classList.toggle('sound-off', !soundEnabled);
   }
+  _syncSoundBtn = sync;
   sync();
   btn.onclick = () => {
     soundEnabled = !soundEnabled;
     localStorage.setItem('anyonechat.sound', String(soundEnabled));
     sync();
-    if (soundEnabled) { _audioPrimed = true; playNotification(); }
+    if (soundEnabled) { _audioPrimed = true; playNotification(true); }
   };
+}
+
+// Icons are decoration: a button, tab or label already has its own name, and an unnamed picture in the accessibility tree is noise (N-4).
+// Drawn icons are hidden from screen readers as they are added; an icon that carries meaning has a role or a label and is left alone.
+function hideDecorativeIcons(root) {
+  const list = root.nodeType === 1 && root.matches('svg') ? [root] : [];
+  if (root.querySelectorAll) list.push(...root.querySelectorAll('svg'));
+  for (const s of list) {
+    if (s.hasAttribute('aria-hidden') || s.hasAttribute('role') || s.hasAttribute('aria-label') || s.hasAttribute('aria-labelledby')) continue;
+    if (s.querySelector(':scope > title')) continue;
+    s.setAttribute('aria-hidden', 'true');
+  }
+}
+if (typeof MutationObserver === 'function' && document.body) {
+  hideDecorativeIcons(document.body);
+  new MutationObserver((recs) => { for (const r of recs) for (const n of r.addedNodes) if (n.nodeType === 1) hideDecorativeIcons(n); })
+    .observe(document.body, { childList: true, subtree: true });
 }
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -526,15 +554,14 @@ function persistField(lsKey, value, from = 0) {
 // read as before and moves to chunks with its first write.
 const THREAD_CHUNK = 500;
 const threadState = new Map();       // field -> { chunks: how many are stored (null: unknown, write everything), dirtyFrom: first chunk a failed write left behind }
-function persistThread(lsKey, value, from) {
+async function writeThread(lsKey, value, from) {
   const n = value.length, nChunks = Math.ceil(n / THREAD_CHUNK);
   const st = threadState.get(lsKey);
   let first = Math.floor(Math.max(0, Math.min(from, n)) / THREAD_CHUNK);
   if (!st || st.chunks == null) first = 0; else first = Math.min(first, st.chunks);
   const parts = new Map();           // chunk number -> its JSON, taken now so later changes can't alter a write that is already queued
   for (let i = first; i < nChunks; i++) parts.set(i, JSON.stringify(value.slice(i * THREAD_CHUNK, (i + 1) * THREAD_CHUNK)));
-  const prev = persistQueues.get(lsKey) || Promise.resolve();
-  const next = prev.then(async () => {
+  {
     let wrote = first;
     try {
       const cur = threadState.get(lsKey) || { chunks: null };
@@ -569,11 +596,61 @@ function persistThread(lsKey, value, from) {
       threadState.set(lsKey, { chunks: cur.chunks, dirtyFrom: Math.min(cur.dirtyFrom ?? Infinity, wrote) });
       storageFailed(lsKey, value, e); return false;
     }
-  });
-  persistQueues.set(lsKey, next);
-  next.finally(() => { if (persistQueues.get(lsKey) === next) persistQueues.delete(lsKey); });
-  return next;
+  }
 }
+// A chat that is deleted (contact removed, group deleted) while a save of it is queued or running: the queued save is dropped, and once the
+// running one has landed the chat is removed again, so history that was deleted never comes back to the disk. A new save of the same
+// chat afterwards (the contact added again) cancels that second removal.
+const droppedThreads = new Map();    // field -> token of the last deletion
+function dropThread(lsKey) {
+  const job = threadJobs.get(lsKey);
+  if (job && job.pending) { const p = job.pending; job.pending = null; p.resolve(false); }
+  threadState.delete(lsKey);
+  fields.deleteThread(lsKey).catch(() => {});
+  const running = persistQueues.get(lsKey);
+  if (!running) return;
+  const token = {};
+  droppedThreads.set(lsKey, token);
+  running.then(() => {
+    if (droppedThreads.get(lsKey) !== token) return;
+    droppedThreads.delete(lsKey);
+    threadState.delete(lsKey);
+    fields.deleteThread(lsKey).catch(() => {});
+  });
+}
+// Saves of one chat never run at the same time, and saves that pile up while one is running become ONE: a flood of 2,000 messages queued
+// 2,000 writes of the newest chunk (R-3), about 15 s of work after the last message arrived. Now one write runs, and everything that came
+// in meanwhile is written together afterwards, from the newest copy of the chat and from the earliest message any of those calls changed.
+// Each caller's promise resolves with the result of the write that includes its change.
+const threadJobs = new Map();        // field -> { pending: { value, from, promise, resolve } | null }
+function persistThread(lsKey, value, from) {
+  droppedThreads.delete(lsKey);
+  let job = threadJobs.get(lsKey);
+  if (job && job.pending) {
+    job.pending.value = value;
+    job.pending.from = Math.min(job.pending.from, from);
+    return job.pending.promise;
+  }
+  let resolve;
+  const promise = new Promise((r) => { resolve = r; });
+  const pending = { value, from, promise, resolve };
+  if (job) { job.pending = pending; return promise; }      // a write is running: this one follows it
+  job = { pending };
+  threadJobs.set(lsKey, job);
+  const idle = (async () => {
+    while (job.pending) {
+      const p = job.pending; job.pending = null;
+      let ok = false;
+      try { ok = await writeThread(lsKey, p.value, p.from); } catch { ok = false; }
+      p.resolve(ok);
+    }
+    threadJobs.delete(lsKey);
+  })();
+  persistQueues.set(lsKey, idle);        // what the rest of the code waits for ("everything queued has landed")
+  idle.finally(() => { if (persistQueues.get(lsKey) === idle) persistQueues.delete(lsKey); });
+  return promise;
+}
+
 
 // ---- Nothing is lost silently ----
 // A message that couldn't be written stays on screen with a "not saved" mark, and a banner explains; the mark goes once a later write
@@ -944,7 +1021,7 @@ async function deleteGroup(id) {
   groups = groups.filter(g => g.id !== id);
   prunePeers();
   threadCache.delete('grp:' + id);
-  fields.deleteThread(LS.thread('grp:' + id)).catch(() => {}); threadState.delete(LS.thread('grp:' + id));
+  dropThread(LS.thread('grp:' + id));
   forgetThreadMedia('grp:' + id);
 }
 
@@ -1701,6 +1778,7 @@ function initAppearance() {
 
 function initLang() {
   applyI18n();
+  if (_syncSoundBtn) _syncSoundBtn();
   // The desktop app's own dialogs and its start screen use the same language as the window.
   try {
     window.electron?.setLanguage?.(getLang(), {
@@ -2012,7 +2090,7 @@ async function addContact(petname, address) {
 // their address against the one this session was made with, as for any request.
 async function removeContact(address, { keepSession = true } = {}) {
   await fetch('/api/contacts', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) });
-  fields.deleteThread(LS.thread(address)).catch(() => {}); threadState.delete(LS.thread(address));
+  dropThread(LS.thread(address));
   forgetThreadMedia(address);
   threadCache.delete(address);
   if (!keepSession) { fields.delete(LS.session(address)).catch(() => {}); sessions.delete(address); corruptSessions.delete(address); }
@@ -3582,6 +3660,7 @@ async function pollNet() {
   try { const w = await fetch('/api/whoami').then((r) => r.json()); ready = w.network === 'ready'; _wsOnline = true; }
   catch { ready = false; _wsOnline = false; }
   _netReady = ready;
+  if (ready) maybeCheckUpdateOnStart();
   // Whether our address is reachable and findable (the same answer as the Status tab). No answer: nothing is known, so nothing is claimed.
   _reach = null;
   if (ready) {
@@ -7019,6 +7098,103 @@ function resyncAfterRestore() {
   toast(t('backup.restoredToast'), 8000);
 }
 
+// ---- Update check at start (off by default) ----
+// With the switch on, once the network is ready the app asks the project's releases page whether a newer version exists, through the same
+// route as the manual check (the backend gives it a circuit of its own, new at every start; nothing goes outside the Anyone network). A
+// window appears only for a version it has not shown yet; closing it records that version, and the next start still checks, so a newer
+// release is shown. Up to date, offline or failed: nothing is shown.
+const UPDATE_AUTO_KEY = 'anonchat.autoUpdate', UPDATE_SEEN_KEY = 'anonchat.updateSeen';
+const UPDATE_START_DELAY_MS = 20000;       // after the network is ready, so starting up is not slowed
+function autoUpdateOn() { try { return localStorage.getItem(UPDATE_AUTO_KEY) === 'on'; } catch { return false; } }
+function setAutoUpdate(on) { try { localStorage.setItem(UPDATE_AUTO_KEY, on ? 'on' : 'off'); } catch {} }
+function updateSeen() { try { return localStorage.getItem(UPDATE_SEEN_KEY) || ''; } catch { return ''; } }
+function markUpdateSeen(v) { try { localStorage.setItem(UPDATE_SEEN_KEY, String(v)); } catch {} }
+let _updateStartDone = false;
+function maybeCheckUpdateOnStart() {
+  if (_updateStartDone) return;
+  _updateStartDone = true;                  // decided once per start, at the first moment the network is ready
+  if (!autoUpdateOn()) return;              // off then: switching it on later in this session checks at the next start, as the switch says
+  setTimeout(() => { runStartupUpdateCheck().catch(() => {}); }, UPDATE_START_DELAY_MS);
+}
+async function runStartupUpdateCheck() {
+  if (!autoUpdateOn()) return;              // switched off while waiting
+  const resp = await fetch('/api/update/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  if (!resp.ok) return;
+  const r = await resp.json().catch(() => null);
+  if (!r || !r.updateAvailable || typeof r.latest !== 'string' || typeof r.url !== 'string') return;
+  // The backend already checks both; the window checks again before showing anything: a version is plain characters and the link is the
+  // project's GitHub address, so nothing else can reach the screen or the clipboard.
+  if (!/^[0-9A-Za-z.+-]{1,40}$/.test(r.latest) || !/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/releases(?:\/[\w.\/%+-]*)?$/.test(r.url)) return;
+  if (r.latest === updateSeen()) return;     // already shown for this version
+  await showUpdateWindow(r);
+}
+async function showUpdateWindow(r) {
+  const proxy = await fetch('/api/network').then((x) => x.json()).then((n) => '127.0.0.1:' + (Number(n.socksPort) || 9050)).catch(() => '127.0.0.1:9050');
+  let overlay = document.getElementById('update-overlay');
+  if (!overlay) { overlay = el('div', { id: 'update-overlay', className: 'confirm-overlay' }); document.body.append(overlay); }
+  overlay.innerHTML = '';
+  overlay.hidden = false;
+  const previous = document.activeElement;
+  const latest = 'v' + r.latest;
+  const dialog = el('div', { className: 'upd-dialog', 'aria-modal': 'true', 'aria-labelledby': 'upd-win-title' });
+  dialog.setAttribute('role', 'dialog');
+  let when = '';
+  if (r.publishedAt) { const d = new Date(r.publishedAt); if (!isNaN(d)) { try { when = d.toLocaleDateString(getLang(), { day: 'numeric', month: 'short', year: 'numeric' }); } catch {} } }
+  const current = 'v' + (r.current || '');
+  const head = el('div', { className: 'upd-win-head' });
+  head.append(el('img', { src: '/app-icon.png', alt: '', width: 30, height: 30 }));
+  const titles = el('div');
+  titles.append(el('h3', { id: 'upd-win-title', textContent: t('update.winTitle', { latest }) }),
+    el('div', { className: 'upd-win-sub', textContent: when ? t('update.winSub', { current, date: when }) : t('update.winSubNoDate', { current }) }));
+  head.append(titles);
+  const linkRow = el('div', { className: 'upd-win-link' });
+  linkRow.append(el('code', { className: 'upd-win-url', textContent: r.url }));
+  const rowCopy = el('button', { type: 'button', className: 'upd-win-copy', textContent: t('update.copyShort') });
+  linkRow.append(rowCopy);
+  const note = el('div', { className: 'upd-win-note' });
+  const why = el('p');
+  why.append(el('strong', { textContent: t('update.socks') }), ' ' + t('update.socksWhy', { proxy }));
+  note.append(why, el('p', { textContent: t('update.checksum') }));
+  const actions = el('div', { className: 'confirm-actions' });
+  const closeBtn = el('button', { type: 'button', className: 'confirm-cancel', textContent: t('nav.close') });
+  const copyBtn = el('button', { type: 'button', className: 'confirm-ok', textContent: t('update.copyBtn') });
+  actions.append(closeBtn, copyBtn);
+  dialog.append(head, el('div', { className: 'upd-win-label', textContent: t('update.linkLabel') }), linkRow, note, actions);
+  overlay.append(dialog);
+
+  let closed = false;
+  const shut = () => {
+    if (closed) return; closed = true;
+    markUpdateSeen(r.latest);
+    overlay.hidden = true; overlay.innerHTML = '';
+    document.removeEventListener('keydown', onKey, true);
+    try { previous && previous.focus && previous.focus(); } catch {}
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') { e.stopPropagation(); shut(); return; }
+    if (e.key === 'Tab') {                  // the window keeps focus until it is closed
+      const f = [...dialog.querySelectorAll('button')].filter((b) => !b.hidden);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (!dialog.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+      else if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  };
+  document.addEventListener('keydown', onKey, true);
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(r.url); } catch { toast(t('toast.failed')); return; }
+    markUpdateSeen(r.latest);
+    rowCopy.textContent = '\u2713 ' + t('update.copied'); rowCopy.disabled = true;
+    copyBtn.hidden = true;
+    closeBtn.focus();
+  };
+  rowCopy.onclick = copy; copyBtn.onclick = copy;
+  closeBtn.onclick = shut;
+  overlay.onclick = (e) => { if (e.target === overlay) shut(); };
+  copyBtn.focus();
+}
+
 function openSettingsDialog(focus) {
   let overlay = document.getElementById('settings-overlay');
   if (!overlay) {
@@ -7240,7 +7416,18 @@ function openSettingsDialog(focus) {
   const updBtn = el('button', { type: 'button', className: 'set-pill', textContent: t('update.check') });
   updRow.append(updInfo, updBtn);
   const updOut = el('div', { className: 'upd-result', hidden: true, role: 'status' });
-  dialog.append(updRow, updOut);
+  // Check at start: off until the person turns it on. Turning it on does not check now; the first check is at the next start.
+  const autoRow = el('div', { className: 'set-opt-row' });
+  const autoInfo = el('div', { style: 'flex:1' });
+  autoInfo.append(el('div', { className: 'set-row-label', id: 'upd-auto-label', textContent: t('update.auto') }), el('div', { className: 'set-desc', textContent: t('update.autoDesc') }));
+  const autoSw = el('button', { type: 'button', className: 'sw', id: 'upd-auto-sw', role: 'switch', 'aria-labelledby': 'upd-auto-label' });
+  autoSw.append(el('span', { className: 'sw-thumb' }));
+  const paintAuto = () => autoSw.setAttribute('aria-checked', String(autoUpdateOn()));
+  paintAuto();
+  autoSw.onclick = () => { setAutoUpdate(!autoUpdateOn()); paintAuto(); };
+  autoRow.append(autoInfo, autoSw);
+  const autoNote = el('div', { className: 'upd-note', textContent: t('update.autoLeaves') });
+  dialog.append(updRow, autoRow, autoNote, updOut);
 
   fetch('/api/version').then(r => r.json())
     .then(v => { updVersion.textContent = t('update.version', { v: 'v' + v.version }); })
