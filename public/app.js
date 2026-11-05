@@ -6161,7 +6161,7 @@ function showWelcome() {
       };
       card.append(restore);
     }
-    card.append(el('div', { className: 'welcome-powered', textContent: t('welcome.poweredBy') }));
+    card.append(el('div', { className: 'welcome-powered', textContent: t('welcome.protectedBy') }));
     card.append(el('img', { className: 'welcome-anyone', src: '/anyone-logo.png', alt: 'Anyone', width: 98, height: 26, draggable: false }));
 
     overlay.append(languagePill(() => { overlay.remove(); showWelcome().then(resolve); }), card);
