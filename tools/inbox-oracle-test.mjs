@@ -26,7 +26,7 @@ async function backend(requests) {
     PUBLIC_PORT: String(ports.pub), UI_PORT: String(ports.ui), DATA_DIR: d + '/data', ANON_DIR: d + '/anon', ANONCHAT_UI_TOKEN: TOKEN, ANON_CTRL_PORT: '1', PEERS: '{}' } });
   const ui = (p, m = 'GET', body) => req(ports.ui, p, m, body, { 'X-AnonChat-Token': TOKEN, Host: '127.0.0.1:' + ports.ui });
   for (let i = 0; i < 60; i++) { try { if ((await ui('/api/whoami')).status === 200) break; } catch {} await sleep(250); }
-  await ui('/api/mailbox-keys', 'POST', { replace: true, keys: [{ address: CONTACT, key: randomBytes(32).toString('base64') }, { address: MEMBER, key: randomBytes(32).toString('base64') }] });
+  await ui('/api/stamp-keys', 'POST', { replace: true, keys: [{ address: CONTACT, key: randomBytes(32).toString('base64') }, { address: MEMBER, key: randomBytes(32).toString('base64') }] });
   const blocked = (await ui('/api/blocked', 'POST', { address: BLOCKED })).status === 200;
   await ui('/api/settings', 'POST', { acceptRequests: requests });
   return { srv, blocked, inbox: (env) => req(ports.pub, '/api/inbox', 'POST', env, { Host: ME }) };

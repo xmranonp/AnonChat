@@ -181,7 +181,7 @@ function broadcastEnvelope(envelope) {
   }
 }
 
-// A message arrived from a contact or group member whose mailbox key we don't have yet: ask the window (which holds our identity key) to
+// A message arrived from a contact or group member whose stamp key we don't have yet: ask the window (which holds our identity key) to
 // work it out, fetching the member's keys first if needed. At most every 30 s per address.
 const _keyAsks = new Map();
 function askWindowForKey(address) {
@@ -189,7 +189,7 @@ function askWindowForKey(address) {
   if (now - (_keyAsks.get(address) || 0) < 30000) return;
   _keyAsks.set(address, now);
   if (_keyAsks.size > 1000) _keyAsks.clear();
-  const msg = JSON.stringify({ type: 'mailbox:missing', address });
+  const msg = JSON.stringify({ type: 'stamp:missing', address });
   for (const sock of wsClients) if (sock.readyState === 1) sock.send(msg);
 }
 
@@ -427,7 +427,7 @@ pub.post('/api/inbox', (req, res) => {
   const claimedContact = contactList.find(c => c.address === from) || null;
   const claimedPeer = !claimedContact && members.has(from) && from !== myAddress();
   const needsStamp = !!claimedContact || claimedPeer;
-  const mkey = needsStamp ? store.mailboxKey(from) : null;
+  const mkey = needsStamp ? store.stampKey(from) : null;
   const missingKey = needsStamp && !mkey;
   const unverified = needsStamp && (!mkey || !stamp.check(mkey, env, from, myAddress()));
   const known = !!claimedContact && !unverified;
@@ -1024,14 +1024,14 @@ ui.delete('/api/contacts', (req, res) => {
   const { address } = req.body || {};
   if (address) {
     store.removeContact(address);
-    if (!store.getPeers().some((p) => p.address === address)) store.removeMailboxKey(address);
+    if (!store.getPeers().some((p) => p.address === address)) store.removeStampKey(address);
   }
   res.json({ ok: true });
 });
 
-// Mailbox keys (lib/stamp.js) for contacts and group members, worked out by the window, which holds the identity key. `replace` sends
+// Stamp keys (lib/stamp.js) for contacts and group members, worked out by the window, which holds the identity key. `replace` sends
 // the full set (at start and whenever the lists change); otherwise the keys are added, as before a first message to someone new.
-ui.post('/api/mailbox-keys', (req, res) => {
+ui.post('/api/stamp-keys', (req, res) => {
   const list = Array.isArray(req.body?.keys) ? req.body.keys : null;
   if (!list || list.length > 5000) return res.status(400).json({ error: 'keys required' });
   const clean = [];
@@ -1040,7 +1040,7 @@ ui.post('/api/mailbox-keys', (req, res) => {
     if (!isValidAddr(address) || typeof k.key !== 'string' || Buffer.from(k.key, 'base64').length !== 32) return res.status(400).json({ error: 'bad key' });
     clean.push({ address, key: k.key });
   }
-  store.setMailboxKeys(clean, { replace: req.body.replace === true });
+  store.setStampKeys(clean, { replace: req.body.replace === true });
   res.json({ ok: true, count: clean.length });
 });
 
@@ -1092,7 +1092,7 @@ ui.delete('/api/peers', (req, res) => {
   const addr = cleanAddr(req.body?.address);
   if (addr) {
     store.removePeer(addr);
-    if (!store.getContacts().some((c) => c.address === addr)) store.removeMailboxKey(addr);
+    if (!store.getContacts().some((c) => c.address === addr)) store.removeStampKey(addr);
   }
   res.json({ ok: true });
 });
@@ -1183,10 +1183,10 @@ function dropDeadPath(addr) {
   circuits.rebuildCircuitForContact(addr).catch(() => {});
 }
 
-// The stamp is always worked out here from the stored mailbox key, never taken from the window. Without a key the message goes unstamped.
+// The stamp is always worked out here from the stored stamp key, never taken from the window. Without a key the message goes unstamped.
 function stampEnvelope(envelope, from, to) {
   const { stamp: _ignored, pow: _p, ...plainEnv } = envelope;
-  const mk = store.mailboxKey(to);
+  const mk = store.stampKey(to);
   return mk ? { ...plainEnv, stamp: stamp.make(mk, { ...plainEnv, from }, from, to) } : plainEnv;
 }
 // For a retry from the queue: a fresh stamp when the key is known now; otherwise the one this backend made when the message was queued

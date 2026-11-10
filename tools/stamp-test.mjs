@@ -66,12 +66,12 @@ try {
   ok('group member, no key yet: same', (await inbox(env(MEMBER))) === 200 && (await waiting(MEMBER)).stamped === 0 && (await waiting(MEMBER)).unstamped === 1);
   ok('a stranger is unaffected', (await inbox(env(OTHER))) === 200);
   await sleep(300);
-  ok('the window is asked for the missing keys (once per address)', events.filter((e) => e.type === 'mailbox:missing' && e.address === FRIEND).length === 1
-    && events.some((e) => e.type === 'mailbox:missing' && e.address === MEMBER), JSON.stringify(events));
+  ok('the window is asked for the missing keys (once per address)', events.filter((e) => e.type === 'stamp:missing' && e.address === FRIEND).length === 1
+    && events.some((e) => e.type === 'stamp:missing' && e.address === MEMBER), JSON.stringify(events));
   sock.close();
 
-  ok('a malformed mailbox key is refused', (await ui('/api/mailbox-keys', 'POST', { keys: [{ address: FRIEND, key: 'short' }] })).status === 400);
-  const set = await ui('/api/mailbox-keys', 'POST', { replace: true, keys: [{ address: FRIEND, key: K_FRIEND }, { address: MEMBER, key: K_MEMBER }] });
+  ok('a malformed stamp key is refused', (await ui('/api/stamp-keys', 'POST', { keys: [{ address: FRIEND, key: 'short' }] })).status === 400);
+  const set = await ui('/api/stamp-keys', 'POST', { replace: true, keys: [{ address: FRIEND, key: K_FRIEND }, { address: MEMBER, key: K_MEMBER }] });
   ok('the window can hand over the keys', set.status === 200 && set.body.count === 2);
 
   const big = big0;
@@ -98,22 +98,22 @@ try {
 
   await ui('/api/contacts', 'DELETE', { address: FRIEND });
   const mbox = JSON.parse(readFileSync(join(d, 'data', 'mailbox.json'), 'utf8'));
-  ok('removing a contact also removes their mailbox key', !(FRIEND in mbox) && MEMBER in mbox);
+  ok('removing a contact also removes their stamp key', !(FRIEND in mbox) && MEMBER in mbox);
 
-  console.log('Shared mailbox key (the function in public/app.js)');
+  console.log('Shared stamp key (the function in public/app.js)');
   {
     const pubDir = join(APP, 'public'), tmp = mkdtempSync(join(tmpdir(), 'mbox-'));
     writeFileSync(join(tmp, 'crypto.mjs'), readFileSync(join(pubDir, 'crypto.js')));
     const { b64 } = await import(pathToFileURL(join(tmp, 'crypto.mjs')).href);
     const SRC = readFileSync(join(pubDir, 'app.js'), 'utf8');
-    const m = /^async function mailboxKeyFor\(/m.exec(SRC);
+    const m = /^async function stampKeyFor\(/m.exec(SRC);
     let i = SRC.indexOf('{', SRC.indexOf(')', m.index)), depth = 0, end = -1;
     for (let j = i; j < SRC.length; j++) { if (SRC[j] === '{') depth++; else if (SRC[j] === '}' && --depth === 0) { end = j + 1; break; } }
     const EC = { name: 'ECDH', namedCurve: 'P-256' };
     const party = async (address) => {
       const kp = await crypto.subtle.generateKey(EC, true, ['deriveBits']);
       const me = { address, ecdhPub: b64.enc(await crypto.subtle.exportKey('raw', kp.publicKey)), jwk: await crypto.subtle.exportKey('jwk', kp.privateKey) };
-      me.keyFor = new Function('EC', 'b64', 'ikPrivJwk', 'myAddress', '_mboxKeys', SRC.slice(m.index, end) + '\nreturn mailboxKeyFor;')(EC, b64, me.jwk, address, new Map());
+      me.keyFor = new Function('EC', 'b64', 'ikPrivJwk', 'myAddress', '_stampKeys', SRC.slice(m.index, end) + '\nreturn stampKeyFor;')(EC, b64, me.jwk, address, new Map());
       return me;
     };
     const A = await party(ME), B = await party(FRIEND), C = await party(OTHER);
@@ -123,6 +123,13 @@ try {
     const e = env(ME, {}); delete e.stamp;
     const sent = { ...e, stamp: stamp.make(ab, e, ME, FRIEND) };
     ok('a stamp made with one side’s key checks out with the other side’s', stamp.check(ba, sent, ME, FRIEND) && !stamp.check(ac, sent, ME, FRIEND));
+    // Compatibility: the key was renamed in the code (1.0.7, "mailbox key" -> "stamp key"), but the key itself must not change, or
+    // stamps between this version and older ones would fail. Fixed test keys; the expected value was worked out by 1.0.6.
+    const KA = { kty: 'EC', crv: 'P-256', x: 'sDGbOye-NSW6SgRu1ODwqDOTalvNR242srITWsELIrw', y: 'D6zncqmQ6n2i4ZRI6SDm4sy4C3A60JIYm0gFRf33IQA', d: '00OHwyoTlcckoXEWTQaZDpfy_39WC6dvvofQkqiN6xE', ext: true, key_ops: ['deriveBits'] };
+    const PUB_B = 'BF/zMZ4lktRkkbBUP4nR2oLeNQFygS9E9+cJlaTwPGDCWIzUoRj2s8Jd47mUBYPeZrFgj4jHRlpVv96WWkt3aHI=';
+    const fixedKeyFor = new Function('EC', 'b64', 'ikPrivJwk', 'myAddress', '_stampKeys', SRC.slice(m.index, end) + '\nreturn stampKeyFor;')(EC, b64, KA, ME, new Map());
+    ok('the same key as 1.0.6 works out (HKDF label unchanged)', (await fixedKeyFor({ address: FRIEND, ecdhPub: PUB_B })) === 'gW0L0HSl8uA/bWCqAxg+rxJRAvyyRfC4ydpXLNJ8JUs=');
+    ok('the keys are still kept in data/mailbox.json', /'mailbox\.json'/.test(readFileSync(join(APP, 'lib/store.js'), 'utf8')));
   }
 
   console.log('One-time keys: the window keeps only what it needs (ensurePrekeys in public/app.js)');

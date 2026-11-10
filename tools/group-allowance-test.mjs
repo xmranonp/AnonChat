@@ -40,7 +40,7 @@ try {
   ok('/api/peers refuses someone in none of our groups', p1.status === 403, p1.status);
   // F-4: answered like everyone else (200), kept as unverified until the window hands over the key
   ok('a group member whose key we don\u2019t have yet gets the usual answer and is kept, unverified', (await drop(MEMBER)) === 200 && (await count(MEMBER)) === 1);
-  await ui('/api/mailbox-keys', 'POST', { replace: true, keys: [{ address: MEMBER, key: K_MEMBER }] });
+  await ui('/api/stamp-keys', 'POST', { replace: true, keys: [{ address: MEMBER, key: K_MEMBER }] });
   await ui('/api/settings', 'POST', { acceptRequests: false });
   await drop(MEMBER); await drop(STRANGER);
   ok('requests off: a group member still gets through', (await count(MEMBER)) === 2);

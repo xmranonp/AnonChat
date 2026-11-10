@@ -46,11 +46,11 @@ answer = () => httpErr(503);
 await outbox._flush();
 ok('503 (busy) keeps the message for later', outbox.list().some((i) => i.id === id));
 
-// queued without a mailbox key, the key turns up: the next attempt carries a stamp
+// queued without a stamp key, the key turns up: the next attempt carries a stamp
 posted.length = 0; key = 'K';
 answer = () => ({ ok: true });
 await outbox._flush();
-ok('a message queued before the mailbox key was known is stamped when it goes out', posted.length === 1 && posted[0].stamp === 'K:' + TO && posted[0].from === 'me.anyone', JSON.stringify(posted));
+ok('a message queued before the stamp key was known is stamped when it goes out', posted.length === 1 && posted[0].stamp === 'K:' + TO && posted[0].from === 'me.anyone', JSON.stringify(posted));
 ok('…and delivered', events.includes('delivered:' + id));
 
 // proof of work, then 409 on the paid retry

@@ -1678,7 +1678,7 @@ async function refreshWhoami() {
   myAddress = r.address || had || null;
   // When the address first resolves, circuits are available: flush the outbox so queued messages don't wait.
   if (!had && myAddress) {
-    if (contactsReady) syncMailboxKeys().catch(() => {});   // the shared keys include our address: work them out now
+    if (contactsReady) syncStampKeys().catch(() => {});   // the shared keys include our address: work them out now
     fetch('/api/outbox/flush', { method: 'POST' }).catch(() => {});
   }
   renderIdentityCard();
@@ -1956,7 +1956,7 @@ async function loadContacts() {
   if (Array.isArray(peerList)) peers = peerList;
   _contactsLoadedResolve();
   contactsReady = true;
-  syncMailboxKeys().catch(() => {});
+  syncStampKeys().catch(() => {});
   absorbRequestsOfContacts();
   renderContacts();
   renderRequests();
@@ -1988,7 +1988,7 @@ async function ensurePeer(addr) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) { const e = new Error(data.error || 'could not reach group member'); if (data.error === 'key_mismatch') e.code = 'IK_MISMATCH'; throw e; }
     if (!peerByAddress(addr)) peers.push(data);
-    ensureMailboxKey(data).catch(() => {});
+    ensureStampKey(data).catch(() => {});
     if (groupWaiting.some((w) => w.to === addr)) setTimeout(() => sendGroupWaiting(addr).catch(() => {}), 0);
     return data;
   })();
@@ -2011,56 +2011,57 @@ function prunePeers() {
     if (!contactByAddress(p.address) && !requests[p.address]) discardSession(p.address);
     fetch('/api/peers', { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: p.address }) }).catch(() => {});
   }
-  if (removed) syncMailboxKeys().catch(() => {});
+  if (removed) syncStampKeys().catch(() => {});
 }
-// ---- Mailbox keys (lib/stamp.js) ----
+// ---- Stamp keys (lib/stamp.js) ----
 // Each contact and group member shares a key with us that only the two of us can work out: HKDF over the ECDH of our identity keys.
 // The backend stamps every message to them with it and checks the stamp on every message claiming to be from them, so nobody else can
 // borrow a contact's inbox allowance by writing their address on a message. Worked out here because only the window holds our
 // identity key; the backend gets the result.
-const _mboxKeys = new Map();             // address|their identity key -> our shared key (base64)
-const _mboxGiven = new Map();            // address -> the key the backend has
-let _mboxChain = Promise.resolve();
-async function mailboxKeyFor(holder) {
+const _stampKeys = new Map();             // address|their identity key -> our shared key (base64)
+const _stampGiven = new Map();            // address -> the key the backend has
+let _stampChain = Promise.resolve();
+async function stampKeyFor(holder) {
   if (!holder?.address || !holder.ecdhPub || !ikPrivJwk || !myAddress) return null;
   const ck = holder.address + '|' + holder.ecdhPub;
-  if (_mboxKeys.has(ck)) return _mboxKeys.get(ck);
+  if (_stampKeys.has(ck)) return _stampKeys.get(ck);
   const priv = await crypto.subtle.importKey('jwk', ikPrivJwk, EC, false, ['deriveBits']);
   const pub = await crypto.subtle.importKey('raw', b64.dec(holder.ecdhPub), EC, false, []);
   const shared = await crypto.subtle.deriveBits({ name: 'ECDH', public: pub }, priv, 256);
   const hk = await crypto.subtle.importKey('raw', shared, 'HKDF', false, ['deriveBits']);
   const pair = [myAddress, holder.address].sort().join('|');
+  // The label keeps the key's first name ("mailbox"): changing it would change every stamp key, and older apps would refuse our stamps.
   const bits = await crypto.subtle.deriveBits({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: new TextEncoder().encode('anonchat mailbox v1|' + pair) }, hk, 256);
   const key = b64.enc(new Uint8Array(bits));
-  _mboxKeys.set(ck, key);
+  _stampKeys.set(ck, key);
   return key;
 }
-function postMailboxKeys(keys, replace) {
-  return fetch('/api/mailbox-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keys, replace }) })
-    .then((r) => { if (!r.ok) throw new Error('mailbox keys refused'); });
+function postStampKeys(keys, replace) {
+  return fetch('/api/stamp-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ keys, replace }) })
+    .then((r) => { if (!r.ok) throw new Error('stamp keys refused'); });
 }
 // The full set, for everyone we have keys for (at start and whenever the contact or member lists change).
-function syncMailboxKeys() {
-  _mboxChain = _mboxChain.catch(() => {}).then(async () => {
+function syncStampKeys() {
+  _stampChain = _stampChain.catch(() => {}).then(async () => {
     if (!ikPrivJwk || !myAddress) return;
     const holders = [...contacts, ...peers.filter((p) => !contactByAddress(p.address))];
     const keys = [];
-    for (const h of holders) { const key = await mailboxKeyFor(h).catch(() => null); if (key) keys.push({ address: h.address, key }); }
-    await postMailboxKeys(keys, true);
-    _mboxGiven.clear();
-    for (const k of keys) _mboxGiven.set(k.address, k.key);
+    for (const h of holders) { const key = await stampKeyFor(h).catch(() => null); if (key) keys.push({ address: h.address, key }); }
+    await postStampKeys(keys, true);
+    _stampGiven.clear();
+    for (const k of keys) _stampGiven.set(k.address, k.key);
   });
-  return _mboxChain;
+  return _stampChain;
 }
 // Just this one, before the first message to someone the backend may not have a key for yet.
-function ensureMailboxKey(holder) {
-  _mboxChain = _mboxChain.catch(() => {}).then(async () => {
-    const key = await mailboxKeyFor(holder);
-    if (!key || _mboxGiven.get(holder.address) === key) return;
-    await postMailboxKeys([{ address: holder.address, key }], false);
-    _mboxGiven.set(holder.address, key);
+function ensureStampKey(holder) {
+  _stampChain = _stampChain.catch(() => {}).then(async () => {
+    const key = await stampKeyFor(holder);
+    if (!key || _stampGiven.get(holder.address) === key) return;
+    await postStampKeys([{ address: holder.address, key }], false);
+    _stampGiven.set(holder.address, key);
   });
-  return _mboxChain;
+  return _stampChain;
 }
 
 async function addContact(petname, address) {
@@ -2717,8 +2718,8 @@ async function deliver(contact, frameBytes, opts = {}) {
     if (!(await saveSession(contact.address, s))) throw new Error('could not save the session state');
     return e;
   });
-  // The backend stamps the message with our shared mailbox key; make sure it has the key (a contact or member just added).
-  await ensureMailboxKey(contact).catch(() => {});
+  // The backend stamps the message with our shared stamp key; make sure it has the key (a contact or member just added).
+  await ensureStampKey(contact).catch(() => {});
   const body = { toAddress: contact.address, envelope: env };
   if (opts.offlineTtl) body.offlineTtl = opts.offlineTtl;
   if (opts.ephemeral) body.ephemeral = true;     // call signalling: delivered now or not at all, never queued
@@ -3710,11 +3711,11 @@ function connectWS() {
       return;
     }
 
-    // The backend got a message from a contact or group member it has no mailbox key for (it asked the sender to retry): hand it over.
-    if (msg.type === 'mailbox:missing') {
+    // The backend got a message from a contact or group member it has no stamp key for (it asked the sender to retry): hand it over.
+    if (msg.type === 'stamp:missing') {
       const holder = keyHolder(msg.address);
-      _mboxGiven.delete(msg.address);              // the backend says it doesn't have it, whatever we thought
-      if (holder) ensureMailboxKey(holder).catch(() => {});
+      _stampGiven.delete(msg.address);              // the backend says it doesn't have it, whatever we thought
+      if (holder) ensureStampKey(holder).catch(() => {});
       else if (inAnyGroup(msg.address)) ensurePeer(msg.address).catch(() => {});
       return;
     }

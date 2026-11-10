@@ -106,7 +106,7 @@ async function makeParty(name, address) {
     rememberMedia: (id, blob) => { P.media = P.media || new Map(); P.media.set(id, blob); },
     fields: { delete: (k) => { P.store.delete(k); return Promise.resolve(); }, get: (k) => P.store.get(k) ?? null, keys: () => [...P.store.keys()] },
     persistQueues: new Map(), corruptSessions: new Set(), persistField: () => Promise.resolve(true),
-    loadOPKs: () => ({}), saveOPKs: () => {}, ensureMailboxKey: async () => {}, syncMailboxKeys: async () => {},
+    loadOPKs: () => ({}), saveOPKs: () => {}, ensureStampKey: async () => {}, syncStampKeys: async () => {},
     appendThread: (k, rec) => { P.thread.push({ k, ...rec }); loadThread(k).push(rec); },
     loadThread, threadCache: P.threads,
     toast: (m) => P.toasts.push(m),

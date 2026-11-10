@@ -47,7 +47,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let pass = 0, fail = 0; const ok = (m, c, x = '') => { c ? pass++ : fail++; console.log((c ? '  ✓ ' : '  ✗ ') + m + (c ? '' : '  [' + x + ']')); };
 try {
-  await ui('/api/mailbox-keys', 'POST', { replace: true, keys: [{ address: FRIEND, key: K_FRIEND }] });
+  await ui('/api/stamp-keys', 'POST', { replace: true, keys: [{ address: FRIEND, key: K_FRIEND }] });
   const s0 = addr(0);
   ok('quiet: a stranger’s message gets in without proof of work', (await pubPost(env(s0))) === 200 && (await waiting(s0)) === 1);
   ok('a stranger’s oversized message (600 KB) is not kept', (await pubPost(env(addr(1), 'x'.repeat(600 * 1024)))) === 200 && (await waiting(addr(1))) === 0);
