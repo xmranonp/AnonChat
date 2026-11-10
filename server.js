@@ -1248,8 +1248,8 @@ ui.post('/api/send', async (req, res) => {
   // The stamp is added here, never taken from the window, and travels with the message into the outbox.
   envelope = stampEnvelope(envelope, from, addr);
   const payload = { ...envelope, from };
-  // Per-message offline expiry chosen by the sender (1h / 12h / 24h); anything else falls back to the outbox default.
-  const ALLOWED_TTL = new Set([3600, 43200, 86400]);
+  // Per-message offline expiry chosen by the sender (1 h / 12 h / 24 h / 3 days / 7 days); anything else falls back to the outbox default.
+  const ALLOWED_TTL = new Set([3600, 43200, 86400, 259200, 604800]);
   const ttlMs = ALLOWED_TTL.has(Number(offlineTtl)) ? Number(offlineTtl) * 1000 : null;
 
   // Every message is written to the queue before the first try, so closing the app at any moment can't lose it, and it is tried at once

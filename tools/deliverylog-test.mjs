@@ -126,6 +126,19 @@ try {
   ok('the Status log says why, once, with the short address', mine.length === 1 && mine[0].includes('To aaaaaa…aa.anyone: address not found on the network (descriptor not found). Retrying.'), JSON.stringify(mine));
   ok('…after the network’s own lines', logs.lines.indexOf(mine[0]) > logs.lines.findIndex((l) => l.includes('Bootstrapped')));
   ok('…and the full address never appears', !logs.lines.some((l) => l.includes(TO)));
+  // "Undelivered" (conversation menu): 3 days and 7 days are accepted (1.0.7); a time the menu doesn't offer falls back to the queue's 7 days.
+  {
+    const DAY = 86400 * 1000, t0 = Date.now(), TO_D = 'd'.repeat(56) + '.anyone';   // another address the network can't find, so the one above keeps its count of tries
+    const ids = [];
+    for (const ttl of [259200, 604800, 999]) { const r = await ui('/api/send', { toAddress: TO_D, envelope: env, offlineTtl: ttl }); ids.push(r.queueId); }
+    const items = (await ui('/api/outbox')).items;
+    const until = (id) => { const it = items.find((i) => i.id === id); return it ? it.expiresAt - t0 : NaN; };
+    const near = (v, want) => Math.abs(v - want) < 60_000;
+    ok('“Undelivered”: 3 days and 7 days are kept that long; an unknown time gets the queue’s 7 days',
+      near(until(ids[0]), 3 * DAY) && near(until(ids[1]), 7 * DAY) && near(until(ids[2]), 7 * DAY), JSON.stringify(ids.map(until)));
+    for (const id of ids) if (id) await fetch(`http://127.0.0.1:${UI}/api/outbox/${id}`, { method: 'DELETE', headers: { 'X-AnonChat-Token': TOKEN } });
+    ok('…and removed again before the rest of the test', !(await ui('/api/outbox')).items.some((i) => ids.includes(i.id)));
+  }
   replies.set('a', 0);
   await ui('/api/outbox/flush', {});
   let got = null;

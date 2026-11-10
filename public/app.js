@@ -2740,7 +2740,7 @@ async function deliver(contact, frameBytes, opts = {}) {
   return data;
 }
 
-const OFFLINE_TTL_OPTIONS = [3600, 43200, 86400];
+const OFFLINE_TTL_OPTIONS = [3600, 43200, 86400, 259200, 604800];   // 1 h, 12 h, 24 h, 3 days, 7 days (the queue's own limit)
 const OFFLINE_TTL_DEFAULT = 86400;
 function offlineTtlFor(addr) {
   const v = Number(prefs.offlineTtl[addr]);
@@ -2750,7 +2750,8 @@ function setOfflineTtlFor(addr, secs) {
   prefs.offlineTtl[addr] = secs; savePrefs();
 }
 function offlineTtlLabel(secs) {
-  return t('ttl.short.h', { n: secs === 3600 ? 1 : secs === 43200 ? 12 : 24 });
+  if (secs > 86400) return t('ttl.short.d', { n: Math.round(secs / 86400) });
+  return t('ttl.short.h', { n: Math.round(secs / 3600) });
 }
 // Voice calls (call.js): signalling goes through the normal ratchet as 'call' frames; the audio has its own encrypted link.
 const CALLS_OFF_KEY = 'anyonechat.calls.off';
