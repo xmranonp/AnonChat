@@ -702,6 +702,9 @@ async function checkFreeSpace() {
 
 // ---- Photos, voice messages and files ----
 const MEDIA_KINDS = new Set(['image', 'video', 'audio', 'voice', 'file']);
+// What a chat can show as a message. Any other kind that gets this far is one this version doesn't know (a later version's): it is ignored
+// without a trace, instead of showing as an empty attachment, so a newer contact can add kinds without older apps showing them.
+const SHOWN_KINDS = new Set(['text', ...MEDIA_KINDS]);
 const MEDIA_KEY_FIELD = 'anyonechat.mediakey';
 let _mediaKey = null;
 async function mediaKey() {
@@ -2149,6 +2152,7 @@ function addToRequest(env, frame) {
   if (k === 'read' || k === 'reaction' || k === 'accept' || k === 'request') return;
   if (k.startsWith('group-') && k !== 'group-invite') return;
   if (k === 'call' && frame.meta?.op !== 'invite') return;
+  if (!SHOWN_KINDS.has(k) && k !== 'call' && k !== 'group-invite') return;   // a kind this version doesn't know: no request is made from it
   const now = Date.now();
   let r = requests[env.from];
   const isNew = !r;
@@ -3369,6 +3373,7 @@ async function handleInbound(env) {
     if (selected === env.from) renderConversation();
     return;
   }
+  if (!SHOWN_KINDS.has(frame.kind)) return;   // a kind this version doesn't know: nothing shown (the session step above is kept)
   const ttl       = Number(frame.meta?.ttl) || 0;
   const expiresAt = ttl ? Date.now() + ttl * 1000 : null;
   const dmid = incomingId(env.from, frame.meta?.mid, env);
@@ -3445,6 +3450,7 @@ let heldGroupFrames = [];
 function applyGroupFrame(env, frame, verified) {
     const gid = frame.meta?.grp;
     if (typeof gid !== 'string') return;
+    if (frame.kind !== 'reaction' && !SHOWN_KINDS.has(frame.kind)) return;   // a kind this version doesn't know: not held, not shown
     const g = groupById(gid);
     if (g && g.removedMe) return;            // we were removed: nothing new is shown
     // Sender must be a current member of this group. env.from is authenticated.

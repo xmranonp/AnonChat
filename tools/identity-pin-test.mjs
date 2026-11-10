@@ -130,7 +130,7 @@ async function makeParty(name, address) {
     REPLY_KINDS: new Set(['image', 'video', 'audio', 'voice', 'file']),
     applyReaction: () => {}, selected: null, selectedGroup: null, sessionUrls: new Map(), sessionBlobs: new Map(),
     peers: P.peers, _peerFetches: new Map(), groups: P.groups, heldGroupFrames: [], HELD_GROUP_TTL: 10 * 60 * 1000, MAX_HELD_GROUP: 100,
-    MEDIA_KINDS: new Set(['image', 'video', 'audio', 'voice', 'file']), MAX_EMOJI_LEN: constOf('MAX_EMOJI_LEN'), FRAME_KIND_RE: constOf('FRAME_KIND_RE'),
+    MEDIA_KINDS: new Set(['image', 'video', 'audio', 'voice', 'file']), SHOWN_KINDS: new Set(['text', 'image', 'video', 'audio', 'voice', 'file']), MAX_EMOJI_LEN: constOf('MAX_EMOJI_LEN'), FRAME_KIND_RE: constOf('FRAME_KIND_RE'),
     THUMB_RE: constOf('THUMB_RE'), OFFLINE_TTL_DEFAULT: constOf('OFFLINE_TTL_DEFAULT'), MEMBER_ADDR_RE: constOf('MEMBER_ADDR_RE'), OPK_USE_MS: 7 * 24 * 3600 * 1000,
     offerNewSession: (a, force, why) => { (P.offers = P.offers || []).push({ a, why }); },
     tellNowARequest: (a) => { (P.told = P.told || []).push(a); },
@@ -462,6 +462,25 @@ console.log('13. A removed contact\u2019s next message arrives as a request (the
   ok('…not shown as a chat message', !texts(alice, B).includes('are you there'));
   await tick();
   ok('…and nothing went back to him', bob.wire.length === 0, JSON.stringify(bob.wire.map((w) => w.from)));
+}
+
+console.log('14. A kind of message this version doesn\u2019t know (a later version\u2019s) is ignored without a trace (1.0.7)');
+{
+  const [alice, bob, eve] = await fresh();
+  alice.addContact(bob); bob.addContact(alice);
+  await receive(alice, await send(bob, alice.card(), B, 'hi'));
+  const before = alice.thread.length;
+  const r = await receive(alice, await send(bob, alice.card(), B, '', { kind: 'future-thing', payload: new Uint8Array([1, 2, 3]) }));
+  ok('from a contact: read, nothing shown (no empty attachment)', r === 'ok' && alice.thread.length === before, JSON.stringify(alice.thread.slice(before)));
+  ok('…and the next message on the same session still arrives', (await receive(alice, await send(bob, alice.card(), B, 'still here'))) === 'ok' && alice.thread.at(-1)?.text === 'still here');
+  const r2 = await receive(alice, await send(eve, alice.card(), E, '', { kind: 'future-thing', payload: new Uint8Array([4]) }));
+  ok('from someone new: no message request is made from it', r2 === 'ok' && !alice.requests[E]);
+  alice.groups.push({ id: 'g1', name: 'Team', adminAddr: B, members: [{ address: A }, { address: B }] });
+  const n = alice.thread.length;
+  await receive(alice, await send(bob, alice.card(), B, '', { kind: 'future-thing', meta: { grp: 'g1' }, payload: new Uint8Array([5]) }));
+  ok('in a group: nothing shown and nothing held', alice.thread.length === n && !alice.thread.some((m) => m.k === 'grp:g1'));
+  await receive(alice, await send(bob, alice.card(), B, 'team hi', { meta: { grp: 'g1' } }));
+  ok('…while ordinary group messages still show', alice.thread.some((m) => m.k === 'grp:g1' && m.text === 'team hi'));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
