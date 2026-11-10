@@ -1,6 +1,6 @@
 {
   "name": "anonchat-desktop",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "description": "AnonChat desktop launcher (Electron)",
   "main": "main.js",
@@ -22,7 +22,7 @@
     "build:mac": "electron-builder --mac"
   },
   "devDependencies": {
-    "electron": "45.2.3",
+    "electron": "45.3.0",
     "electron-builder": "^26.15.4"
   },
   "build": {
