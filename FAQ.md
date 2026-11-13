@@ -76,6 +76,9 @@ The contact isn't reachable right now; the message is queued and will go out by 
 **I can receive from a contact but my messages to them wait.**
 Their app can reach yours, but yours can't reach theirs. Use **Test connection** in the chat's ⋮ menu: it checks your own address, the contact's address, whether their app answers and whether the two clocks agree, then says what to do. **Rebuild network path** (same menu) clears the old route. Common causes are a computer that slept, a wrong clock, or the same address running on two computers.
 
+**My computer was asleep, and now messages wait or contacts look offline.**
+After a wake the app waits for the network to come back before it sends anything or checks who is online: a few seconds usually, and after a long sleep until the network has a current list of relays, at most about three minutes. Then it clears the network's memory of failed lookups and sends what was waiting. The online dots of your contacts update after the first checks that go through. Nothing is lost: messages stay in the queue.
+
 **What do the colours beside the app name mean?**
 Cyan: ready, and your address can be found. Amber: the network is starting, or your address is not reachable yet (hover to see which). Red: the window lost its link to the app. Cyan says people can reach *you*, not that a given contact is online (that is the dot on their picture).
 

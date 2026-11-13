@@ -356,5 +356,26 @@ try {
   (m && m[2] === '0') ? pass(`start-screen check ${m[1]}/${m[1]}`) : fail('start-screen check: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('start-screen check — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n42. Did the computer just wake from sleep? A long gap between two ticks means yes; a short stall or a clock set back does not');
+try {
+  const out = execFileSync('node', [join(root, 'tools/wakewatch-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`wake detector ${m[1]}/${m[1]}`) : fail('wake detector: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('wake detector — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n44. Waking from sleep with the real backend (frozen for a few seconds): the network wait, one clear-out, no ready before a circuit works (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/wake-test.mjs')], { stdio: 'pipe', timeout: 180000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`wake from sleep ${m[1]}/${m[1]}`) : fail('wake from sleep: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('wake from sleep — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n46. After a wake, nothing is looked up until the network is ready again: no presence re-check, no contact marked offline for it (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/wake-quiet-test.mjs')], { stdio: 'pipe', timeout: 180000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`quiet after a wake ${m[1]}/${m[1]}`) : fail('quiet after a wake: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('quiet after a wake — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

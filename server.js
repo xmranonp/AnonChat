@@ -251,6 +251,8 @@ function maybeRefreshProfile(fromAddr, force = false) {
 // marks them online at once, and a contact seen in the last two minutes isn't checked again.
 const presence = new Map();          // address -> { online, lastSeen, fails }
 const envMs = (k, d) => { const v = parseInt(process.env[k] || '', 10); return v > 0 ? v : d; };   // the tests shorten these
+// Settings only the tests may change: the installed app (NODE_ENV=production, set by start.js) always uses the real values.
+const testEnvMs = (k, d) => (process.env.NODE_ENV === 'production' ? d : envMs(k, d));
 const PRESENCE_INTERVAL_MS = envMs('PRESENCE_INTERVAL_MS', 3 * 60 * 1000);
 const PRESENCE_STAGGER_MS  = envMs('PRESENCE_STAGGER_MS', 4000);
 const PRESENCE_TIMEOUT_MS  = 30000;
@@ -261,11 +263,15 @@ function markSeen(address) {
   presence.set(address, { online: true, lastSeen: Date.now(), fails: 0 });
 }
 const _rechecks = new Set();
+let wakeEpoch = 0;                  // goes up at each wake from sleep: a check that began before it says nothing about the contact
 async function checkPresence(address) {
+  if (!isNetReady()) return;          // not while the network isn't ready (a re-check timer, or a sweep under way when the computer slept)
+  const epoch = wakeEpoch;
   try {
     await onion().get(`http://${address}/api/profile`, { timeout: PRESENCE_TIMEOUT_MS });
     markSeen(address);
   } catch {
+    if (epoch !== wakeEpoch || !isNetReady()) return;          // the computer slept meanwhile, or the network dropped: not their fault
     const p = presence.get(address) || { online: null, lastSeen: null, fails: 0 };
     if (Date.now() - (p.lastSeen || 0) < PRESENCE_FRESH_MS) return;          // reached meanwhile by a message: that wins
     const fails = (p.fails || 0) + 1;
@@ -279,12 +285,13 @@ async function checkPresence(address) {
 
 let _sweeping = false;              // a sweep over many unreachable contacts can outlast the interval: never run two at once
 async function presenceSweep() {
-  if (_sweeping || !netready.isReady()) return;          // not before the network is ready (lib/netready.js)
+  if (_sweeping || !isNetReady()) return;          // not before the network is ready (lib/netready.js)
   _sweeping = true;
   try { await presenceSweepOnce(); } finally { _sweeping = false; }
 }
 async function presenceSweepOnce() {
   for (const c of store.getContacts()) {
+    if (!isNetReady()) return;          // the computer slept during the sweep, or the network dropped: the next sweep starts afresh
     if (Date.now() - (presence.get(c.address)?.lastSeen || 0) < PRESENCE_FRESH_MS) continue;
     await checkPresence(c.address);
     await new Promise(r => setTimeout(r, PRESENCE_STAGGER_MS));
@@ -1148,6 +1155,7 @@ const netready = netreadyLib.create({
   enabled: process.env.ANONCHAT_WAIT_NETWORK === '1',
   bootstrapPct: async () => (await Promise.race([bootstrapPct(), new Promise((r) => setTimeout(() => r(null), 1500))])) ?? knownBootstrap(),
   consensusTimes: () => netreadyLib.readConsensusTimes(ctrlCmd),
+  circuitUp: async () => /circuit-established=1/.test(await Promise.race([ctrlCmd('GETINFO status/circuit-established'), new Promise((r) => setTimeout(() => r(''), 3000))])),
   onReady: (why) => {
     console.log(`[network] ready (${why})`);
     deliveryLog.note('the network is ready; sending what waits');
@@ -1159,13 +1167,31 @@ const netready = netreadyLib.create({
 setInterval(() => { netready.check().catch(() => {}); }, 3000);
 netready.check().catch(() => {});
 
+// A contact whose messages keep failing and who stays silent: clear the network's memory now and then, on a ladder that stays cheap for
+// one who is simply offline (lib/stalewatch.js). Not within 3 minutes of a circuit the user built by hand.
+// The computer woke from sleep (lib/wakewatch.js): the connection under the network program was cut while it still says 100%. Wait for
+// the network as after a start (lib/netready.js), count nothing from the time asleep, and the usual clear-out and sending follow.
+const wake = require('./lib/wakewatch').create({
+  thresholdMs: Math.max(5000, testEnvMs('WAKE_GAP_MS', 20000)),          // the tests shorten it; never below 5 s (a busy moment is not a sleep)
+  onWake: ({ gapMs }) => {
+    console.log(`[network] woke from sleep after ${Math.round(gapMs / 1000)} s`);
+    deliveryLog.note('the computer woke from sleep; waiting for the network before sending');
+    netready.reset();
+    wakeEpoch++;
+    for (const [addr, p] of presence) presence.set(addr, { ...p, fails: 0 });          // checks made before the connection was back count for nothing
+  },
+});
+if (process.env.ANONCHAT_WAIT_NETWORK === '1') wake.start();
+// Is the network ready? Asks the wake detector first, so timers that were due during a sleep don't send before the wake is noticed.
+function isNetReady() { wake.poll(); return netready.isReady(); }
+
 // Can our own address be found through the network? (lib/selftest.js)
 const selfTest = require('./lib/selftest').create({
   probe: () => onion().get(`http://${myAddress()}/api/profile`, { timeout: 60000 }),
   isPublished: () => circuits.isServicePublished(myAddress()),
   clearLookups: async () => { forgetOnionLookups(true); },
   republish: () => circuits.republishService(myAddress()),
-  isReady: () => netready.isReady() && !!myAddress(),
+  isReady: () => isNetReady() && !!myAddress(),
   log: (m) => deliveryLog.note(m),
   timing: process.env.SELFTEST_FAST === '1' ? { settleMs: 500, okEveryMs: 4000, badEveryMs: 2000, againMs: 1500, republishEveryMs: 5000 } : {},    // the tests
 });
@@ -1203,7 +1229,7 @@ function restampQueued(envelope, from, to) {
 async function announceBack() {
   const waitMax = envMs('ANNOUNCE_MAX_WAIT_MS', 5 * 60 * 1000), settle = envMs('ANNOUNCE_SETTLE_MS', 20000);
   const t0 = Date.now();
-  while (!netready.isReady() && Date.now() - t0 < 10 * 60 * 1000) await new Promise((r) => setTimeout(r, 2000));   // not before the network is ready
+  while (!isNetReady() && Date.now() - t0 < 10 * 60 * 1000) await new Promise((r) => setTimeout(r, 2000));   // not before the network is ready
   for (;;) {                                      // published (or, if the control port can't say, after waiting the longest)
     let published = false;
     try { published = await circuits.isServicePublished(myAddress()); } catch {}
@@ -1236,7 +1262,7 @@ function initOutbox() {
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
   });
   // After the listeners: messages that ran out of time while the app was closed are reported too.
-  outbox.init({ onion, pow, myAddress, onRetryFail: refreshPeerDescriptor, stamp: restampQueued, ready: () => netready.isReady() });
+  outbox.init({ onion, pow, myAddress, onRetryFail: refreshPeerDescriptor, stamp: restampQueued, ready: () => isNetReady() });
 }
 
 ui.post('/api/send', async (req, res) => {
