@@ -236,5 +236,44 @@ ok('…the outcomes survive a restart', bigIds.every((id) => outbox._outcomes.ge
   ok('when it finally answers, its message is done', !outbox.list().some((i) => i.id === idSlow));
 }
 
+// The failed-try hook gets the error (1.0.8): without an answer they could not be reached; with one (busy, a proof of work refused) they were
+{
+  const T2 = 'c'.repeat(56) + '.anyone', seen = [];
+  outbox._onRetryFail = (addr, err) => { if (addr === T2) seen.push(err ? (err.response ? 'answered:' + err.response.status : 'unreached') : 'none'); };
+  const unreached = () => Object.assign(new Error('Socks5 proxy rejected connection - HostUnreachable'), { code: 'ESOCKS' });
+  const idA = outbox.enqueue(T2, { ct: 'h1', dh: 'd' }, 'me.anyone');
+  answer = unreached; await outbox._flush();
+  ok('a try that reaches nobody: the hook gets an error without an answer', seen.at(-1) === 'unreached', seen);
+  answer = () => httpErr(503); for (const i of outbox.queue) i.retryAfter = null; await outbox._flush();
+  ok('a busy answer (503): the hook gets the answer', seen.at(-1) === 'answered:503', seen);
+  let n = 0; answer = () => (n++ % 2 === 0 ? httpErr(402, { challenge: 'c', bits: 1 }) : unreached());
+  for (const i of outbox.queue) i.retryAfter = null; await outbox._flush();
+  ok('a proof of work whose send then reaches nobody: counted as not reached', seen.at(-1) === 'unreached', seen);
+  const realPow = outbox._pow; outbox._pow = { solveAsync: async () => { throw new Error('too much work'); } };
+  answer = () => httpErr(402, { challenge: 'c', bits: 40 }); for (const i of outbox.queue) i.retryAfter = null; await outbox._flush();
+  ok('a proof of work we could not do: their 402 answer goes along (they were reached)', seen.at(-1) === 'answered:402', seen);
+  outbox._pow = realPow; outbox._onRetryFail = null;
+  for (const i of [...outbox.queue]) if (i.toAddress === T2) outbox._drop(i);
+}
+
+// The computer sleeps in the middle of a send (1.0.8 audit): no more tries, and the failure hook is told when the try began
+{
+  const T3 = 'd'.repeat(56) + '.anyone', calls = []; let ready = true, ep = 1;
+  const unreached = () => Object.assign(new Error('Socks5 proxy rejected connection - HostUnreachable'), { code: 'ESOCKS' });
+  outbox._ready = () => ready; outbox._epoch = () => ep; outbox._onRetryFail = (addr, err, e) => { if (addr === T3) calls.push(e); };
+  const idZ = outbox.enqueue(T3, { ct: 'z1', dh: 'd' }, 'me.anyone');
+  let tries = 0; answer = async () => { tries++; if (tries === 1) { ready = false; ep = 2; } return unreached(); };          // the lid closes during the first try
+  const r = await outbox.deliverNow(idZ, { tries: 3, gapMs: 20 });
+  ok('a send in progress when the network stops being ready makes no second try', tries === 1 && r === 'queued', tries + ' ' + r);
+  ok('the failure hook is given the number from when the try began (not the later one)', calls.length === 1 && calls[0] === 1, calls.join());
+  tries = 0; answer = async () => { tries++; return unreached(); };
+  await outbox._flushAddr(T3);
+  ok('a round does not try while the network is not ready', tries === 0, String(tries));
+  ready = true; await outbox._flushAddr(T3);
+  ok('…and goes on when it is ready again', tries === 1, String(tries));
+  outbox._ready = null; outbox._epoch = null; outbox._onRetryFail = null;
+  for (const i of [...outbox.queue]) if (i.toAddress === T3) outbox._drop(i);
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

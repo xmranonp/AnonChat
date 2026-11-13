@@ -79,6 +79,9 @@ Their app can reach yours, but yours can't reach theirs. Use **Test connection**
 **My computer was asleep, and now messages wait or contacts look offline.**
 After a wake the app waits for the network to come back before it sends anything or checks who is online: a few seconds usually, and after a long sleep until the network has a current list of relays, at most about three minutes. Then it clears the network's memory of failed lookups and sends what was waiting. The online dots of your contacts update after the first checks that go through. Nothing is lost: messages stay in the queue.
 
+**My messages to a contact keep waiting, although they should be there.**
+If their app was restarted, the network can keep yours from finding them for many minutes. Usually their app tells yours that it is back, which clears this at once. If that doesn't reach you and your messages to them keep failing, the app clears the network's memory by itself: first after about three minutes of failing, then less often (15 minutes, an hour, every two hours), never right after you have built a circuit by hand, and not for a contact who answers but is busy. **Rebuild network path** does it at once.
+
 **What do the colours beside the app name mean?**
 Cyan: ready, and your address can be found. Amber: the network is starting, or your address is not reachable yet (hover to see which). Red: the window lost its link to the app. Cyan says people can reach *you*, not that a given contact is online (that is the dot on their picture).
 

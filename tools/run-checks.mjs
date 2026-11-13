@@ -363,12 +363,26 @@ try {
   (m && m[2] === '0') ? pass(`wake detector ${m[1]}/${m[1]}`) : fail('wake detector: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('wake detector — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n43. A contact who stays unreachable and silent: the network’s memory is cleared on a cheap ladder, once for all contacts, never after a hand-built circuit');
+try {
+  const out = execFileSync('node', [join(root, 'tools/stalewatch-test.mjs')], { stdio: 'pipe', timeout: 30000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`failure clear-out ${m[1]}/${m[1]}`) : fail('failure clear-out: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('failure clear-out — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n44. Waking from sleep with the real backend (frozen for a few seconds): the network wait, one clear-out, no ready before a circuit works (needs `npm install`)');
 try {
   const out = execFileSync('node', [join(root, 'tools/wake-test.mjs')], { stdio: 'pipe', timeout: 180000 }).toString();
   const m = out.match(/(\d+) passed, (\d+) failed/);
   (m && m[2] === '0') ? pass(`wake from sleep ${m[1]}/${m[1]}`) : fail('wake from sleep: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('wake from sleep — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n45. A contact who stays silent while messages to them fail, with the real backend: the first clear-out (sent with the descriptor fetch, first), the ladder, nothing after a hand-built circuit, nothing for a contact who answers busy, the series ends when a message gets through, the installed app ignores the test settings (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/stale-test.mjs')], { stdio: 'pipe', timeout: 240000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`failing contact ${m[1]}/${m[1]}`) : fail('failing contact: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('failing contact — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
 console.log('\n46. After a wake, nothing is looked up until the network is ready again: no presence re-check, no contact marked offline for it (needs `npm install`)');
 try {

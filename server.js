@@ -261,6 +261,7 @@ const PRESENCE_FRESH_MS    = envMs('PRESENCE_FRESH_MS', 2 * 60 * 1000);
 
 function markSeen(address) {
   presence.set(address, { online: true, lastSeen: Date.now(), fails: 0 });
+  stale.noteOk(address);
 }
 const _rechecks = new Set();
 let wakeEpoch = 0;                  // goes up at each wake from sleep: a check that began before it says nothing about the contact
@@ -706,9 +707,11 @@ async function bootstrapPct() {
 })();
 
 let lastRenew = 0;
+let userCircuitAt = 0;               // when the user last built a circuit by hand ("New circuit")
 ui.post('/api/circuit/renew', async (_req, res) => {
   if (Date.now() - lastRenew < 1500) return res.status(429).json({ error: 'too_many_requests' });
   lastRenew = Date.now();
+  userCircuitAt = lastRenew;          // lib/stalewatch.js keeps its clear-outs away from it
   try { res.json(await circuits.renewGeneralCircuits()); }
   catch (e) { res.status(503).json({ error: e.message }); }
 });
@@ -782,6 +785,7 @@ const DATA_DIR   = process.env.DATA_DIR || path.join(__dirname, 'data');
 const SOCKS_PORT = Number(SOCKS.split(':').pop());
 const exitSvc = exitpolicy.createExitService({
   ctrl:       ctrlCmd,
+  onForget:   () => { _lastForget = monoNow(); },          // its NEWNYM counts against the shared budget (the next clear-out waits its turn)
   getRouters: () => circuits.getRouterList(),
   lookup:     (ip) => relaygeo.lookupCountry(ip),
   isCountry:  (cc) => !!relaygeo.centroidFor(cc),
@@ -1032,6 +1036,7 @@ ui.delete('/api/contacts', (req, res) => {
   if (address) {
     store.removeContact(address);
     if (!store.getPeers().some((p) => p.address === address)) store.removeStampKey(address);
+    stale.noteGone(address);
   }
   res.json({ ok: true });
 });
@@ -1121,17 +1126,22 @@ const deliveryLog = deliverylog.create();
 
 // Force a fresh descriptor fetch for a peer: it busts a stale cache that still points at the peer's old introduction points after a restart.
 const _lastHsFetch = new Map();
-function refreshPeerDescriptor(addr) {
+const HSFETCH_EVERY_MS = testEnvMs('HSFETCH_EVERY_MS', 5 * 60 * 1000);
+// withClear: a clear-out of the network's memory is due as well (lib/stalewatch.js). Both go on one control connection, the clear-out
+// first, so the fetch starts on a clean slate (separate connections could reach the network program in the other order).
+function refreshPeerDescriptor(addr, withClear = false) {
   const now = Date.now();
   const last = _lastHsFetch.get(addr) || 0;
+  if (withClear && now - last < HSFETCH_EVERY_MS) { forgetOnionLookups(true); return; }          // the fetch isn't due: the clear-out alone
   // At most every 5 minutes per peer. Each lookup asks one of the few directories that hold their address, and the network won't ask
   // the same one again for 15 minutes: looking up every 20 s while they were away used them all up, so their new address (they came
   // back) couldn't be fetched for up to a quarter of an hour.
-  if (now - last < 5 * 60 * 1000) return;
+  if (now - last < HSFETCH_EVERY_MS) return;
   _lastHsFetch.set(addr, now);
   // The control port wants the 56-char onion id without the TLD suffix.
   const onionId = String(addr).replace(/\.anyone$/, '').replace(/\.onion$/, '');
-  ctrlCmd(`HSFETCH ${onionId}`).catch(() => {
+  if (!/^[a-z2-7]{56}$/.test(onionId)) return;          // goes into a control-port command: only ever a real address
+  ctrlCmd(withClear && claimForget(true) ? `SIGNAL NEWNYM\r\nHSFETCH ${onionId}` : `HSFETCH ${onionId}`).catch(() => {
   });
   dropDeadPath(addr);
 }
@@ -1140,12 +1150,16 @@ function refreshPeerDescriptor(addr) {
 // back it can keep us from reaching them for many minutes, although they reach us. NEWNYM clears that memory (and has new
 // connections use new routes; open ones, a call say, carry on). Only when there is reason: they just wrote to us while our messages
 // to them were failing, or "Rebuild network path" was pressed. At most once a minute (manual: every 10 s, the network's own limit).
-let _lastForget = 0;
+let _lastForget = -Infinity;          // monotonic milliseconds: a clock set back can't hold the clear-outs up
+const monoNow = () => require('perf_hooks').performance.now();
+const canForget = (manual = false) => monoNow() - _lastForget >= (manual ? 10000 : 60000);          // may one go now? (nothing is counted)
+function claimForget(manual = false) {          // true (and counted) if a clear-out may go now
+  if (!canForget(manual)) return false;
+  _lastForget = monoNow();
+  return true;
+}
 function forgetOnionLookups(manual = false) {
-  const now = Date.now();
-  if (now - _lastForget < (manual ? 10000 : 60000)) return;
-  _lastForget = now;
-  ctrlCmd('SIGNAL NEWNYM').catch(() => {});
+  if (claimForget(manual)) ctrlCmd('SIGNAL NEWNYM').catch(() => {});
 }
 // Whether the network is ready to look addresses up (lib/netready.js). Sending, the online checks and the "back online" notices wait for
 // it; when it becomes ready the network's lookup memory is cleared once and whatever waits goes. Only when the supervisor (start.js)
@@ -1169,6 +1183,16 @@ netready.check().catch(() => {});
 
 // A contact whose messages keep failing and who stays silent: clear the network's memory now and then, on a ladder that stays cheap for
 // one who is simply offline (lib/stalewatch.js). Not within 3 minutes of a circuit the user built by hand.
+// The tests shorten these; the installed app ignores them (testEnvMs).
+const staleLadder = process.env.NODE_ENV === 'production' ? [] : String(process.env.STALE_LADDER_MS || '').split(',').map((x) => parseInt(x, 10)).filter((x) => x > 0);
+// noteFail() says when a clear-out is due; the failed-retry hook (outbox.init below) sends it, together with the descriptor fetch.
+const stale = require('./lib/stalewatch').create({
+  forget: () => canForget(true),          // a step of the ladder is only used up if a clear-out can really go (refreshPeerDescriptor sends it)
+  userCircuitRecent: () => Date.now() - userCircuitAt < testEnvMs('STALE_USER_QUIET_MS', 3 * 60 * 1000),
+  globalCapMs: testEnvMs('STALE_CAP_MS', 10 * 60 * 1000),
+  ...(staleLadder.length ? { ladderMs: staleLadder } : {}),
+});
+
 // The computer woke from sleep (lib/wakewatch.js): the connection under the network program was cut while it still says 100%. Wait for
 // the network as after a start (lib/netready.js), count nothing from the time asleep, and the usual clear-out and sending follow.
 const wake = require('./lib/wakewatch').create({
@@ -1179,6 +1203,7 @@ const wake = require('./lib/wakewatch').create({
     netready.reset();
     wakeEpoch++;
     for (const [addr, p] of presence) presence.set(addr, { ...p, fails: 0 });          // checks made before the connection was back count for nothing
+    stale.clear();
   },
 });
 if (process.env.ANONCHAT_WAIT_NETWORK === '1') wake.start();
@@ -1237,9 +1262,12 @@ async function announceBack() {
     await new Promise((r) => setTimeout(r, 5000));
   }
   await new Promise((r) => setTimeout(r, settle));  // the address details reach the network's directories a little after
+  const readyAgain = async () => { const t1 = Date.now(); while (!isNetReady() && Date.now() - t1 < 10 * 60 * 1000) await new Promise((r) => setTimeout(r, 2000)); };          // the computer may sleep during the waits below
   for (let round = 0; round < 2; round++) {
+    await readyAgain();
     const me = myAddress();
     if (me) for (const c of store.getContacts()) {
+      if (!isNetReady()) break;
       onion().post(`http://${c.address}/api/profile-bump`, { from: me }, { timeout: 30000 }).catch(() => {});
       await new Promise((r) => setTimeout(r, 300));
     }
@@ -1256,13 +1284,22 @@ function initOutbox() {
   });
   // Why messages to someone are waiting, in the Status log (lib/deliverylog.js).
   outbox.on('tryFailed', ({ toAddress, error }) => deliveryLog.failed(toAddress, error));
-  outbox.on('delivered', (item) => deliveryLog.delivered(item.toAddress));
+  outbox.on('delivered', (item) => { deliveryLog.delivered(item.toAddress); stale.noteOk(item.toAddress); });
   outbox.on('expired', (item) => {
+    if (!outbox.queue.some((i) => i.toAddress === item.toAddress)) stale.noteGone(item.toAddress);          // nothing left for them
     const msg = { type: 'outbox:expired', id: item.id, msgId: item.msgId || null, toAddress: item.toAddress };
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
   });
   // After the listeners: messages that ran out of time while the app was closed are reported too.
-  outbox.init({ onion, pow, myAddress, onRetryFail: refreshPeerDescriptor, stamp: restampQueued, ready: () => isNetReady() });
+  // A failed retry: if they answered (busy, refused) they are reachable, which ends a series of failures; if they could not be reached,
+  // it counts, and a clear-out that is due goes with the descriptor fetch, first (refreshPeerDescriptor).
+  outbox.init({ onion, pow, myAddress, stamp: restampQueued, ready: () => isNetReady(),
+    epoch: () => wakeEpoch,
+    onRetryFail: (addr, err, epoch) => {
+      if (err && err.response) { stale.noteOk(addr); refreshPeerDescriptor(addr); return; }
+      if (epoch !== wakeEpoch || !isNetReady()) return;          // the try began before a sleep, or the network isn't ready: not their fault, and no fetch (it would be remembered for 15 minutes)
+      refreshPeerDescriptor(addr, stale.noteFail(addr));
+    } });
 }
 
 ui.post('/api/send', async (req, res) => {
@@ -1331,7 +1368,9 @@ ui.get('/api/outbox', (_req, res) => res.json({ items: outbox.list() }));
 // What happened to recent messages (delivered, or not delivered in time), for a window that wasn't connected when it happened.
 ui.get('/api/outbox/outcomes', (_req, res) => res.json({ outcomes: outbox.outcomes() }));
 ui.delete('/api/outbox/:id', (req, res) => {
+  const gone = outbox.queue.find((i) => i.id === req.params.id);
   outbox.remove(req.params.id);
+  if (gone && !outbox.queue.some((i) => i.toAddress === gone.toAddress)) stale.noteGone(gone.toAddress);          // nothing left to fail for them
   res.json({ ok: true });
 });
 ui.post('/api/outbox/flush', (_req, res) => {
