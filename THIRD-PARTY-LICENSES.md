@@ -76,7 +76,7 @@ licenses.)
 
 | Tool | Version | License |
 |---|---|---|
-| Electron | 45.3.2 | MIT |
+| Electron | 45.3.4 | MIT |
 | electron-builder | ^26.15.4 | MIT |
 
 ---

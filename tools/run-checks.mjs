@@ -391,5 +391,23 @@ try {
   (m && m[2] === '0') ? pass(`quiet after a wake ${m[1]}/${m[1]}`) : fail('quiet after a wake: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('quiet after a wake — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n47. One version everywhere: the app version in both package files, both lockfiles and the page; the Node version in .nvmrc and both build scripts; the CI reads .nvmrc');
+try {
+  const rd = (f) => readFileSync(join(root, f), 'utf8'), probs = [];
+  const app = JSON.parse(rd('package.json')).version, desk = JSON.parse(rd('desktop/package.json')).version, lock = JSON.parse(rd('package-lock.json'));
+  if (desk !== app) probs.push(`desktop/package.json says ${desk}, package.json ${app}`);
+  if (lock.version !== app || lock.packages?.['']?.version !== app) probs.push(`package-lock.json says ${lock.version}/${lock.packages?.['']?.version}`);
+  const page = (rd('public/index.html').match(/brand-version">v([\d.]+)</) || [])[1]; if (page !== app) probs.push(`the page says v${page}`);
+  const nvm = rd('.nvmrc').trim(), build = (rd('desktop/prepare-resources.sh').match(/NODE_VERSION="\$\{NODE_VERSION:-([\d.]+)\}"/) || [])[1];
+  if (nvm !== build) probs.push(`.nvmrc says ${nvm}, prepare-resources.sh ${build}`);
+  const win = (rd('desktop/prepare-resources.ps1').match(/\$NodeVersion = if \(\$env:NODE_VERSION\) \{ \$env:NODE_VERSION \} else \{ "([\d.]+)" \}/) || [])[1];
+  if (nvm !== win) probs.push(`.nvmrc says ${nvm}, prepare-resources.ps1 (Windows) ${win}`);
+  try { const dl = JSON.parse(rd('desktop/package-lock.json')); const dv = dl.packages?.['']?.version ?? dl.version; if (dv !== app) probs.push(`desktop/package-lock.json says ${dv} (run npm install in desktop/)`); } catch { probs.push('desktop/package-lock.json missing or unreadable'); }
+  const ci = rd('.github/workflows/ci.yml'); if (/node-version:\s/.test(ci) || !/node-version-file: '\.nvmrc'/.test(ci)) probs.push('the CI does not take its Node version from .nvmrc');
+  const el = JSON.parse(rd('desktop/package.json')).devDependencies?.electron || JSON.parse(rd('desktop/package.json')).dependencies?.electron;
+  if (!new RegExp(`\\| Electron \\| ${String(el).replace(/[.^~]/g, (c) => c === '.' ? '\\.' : '')} \\|`).test(rd('THIRD-PARTY-LICENSES.md'))) probs.push(`THIRD-PARTY-LICENSES.md does not list Electron ${el}`);
+  probs.length ? fail('versions: ' + probs.join('; ')) : pass(`versions: app ${app}, Node ${nvm}, Electron ${el}`);
+} catch (e) { fail('versions — ' + e.message); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);
