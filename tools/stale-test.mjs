@@ -42,7 +42,7 @@ writeFileSync(d + '/anon/anon.log', 'Jan 01 00:00:01.000 [notice] Bootstrapped 1
 const fk = spawn('node', [join(APP, 'tools/fake-control-port.mjs'), String(CTL), String(HTTP), d + '/anon'], { stdio: 'ignore' });
 await wait(500);
 const fake = (p, body) => fetch(`http://127.0.0.1:${HTTP}${p}`, { method: 'POST', body: JSON.stringify(body || {}) }).then((r) => r.json());
-const TEST_SETTINGS = { STALE_LADDER_MS: '8000,4000,4000', STALE_CAP_MS: '3000', STALE_USER_QUIET_MS: '22000', HSFETCH_EVERY_MS: '1000' };
+const TEST_SETTINGS = { STALE_LADDER_MS: '8000,4000,4000', STALE_CAP_MS: '3000', STALE_USER_QUIET_MS: '22000', HSFETCH_EVERY_MS: '1000', STALE_FETCH_GRACE_MS: '500' };
 const start = (dataDir, extra) => spawn('node', [join(APP, 'server.js')], { cwd: APP, stdio: 'ignore', env: { ...process.env, ...(SHIM ? { NODE_PATH: SHIM } : {}),
   PUBLIC_PORT: String(PUB), UI_PORT: String(UI), DATA_DIR: dataDir, ANON_DIR: d + '/anon', ANONCHAT_UI_TOKEN: TOKEN, ANON_CTRL_PORT: String(CTL),
   SOCKS: `socks5h://127.0.0.1:${socks.address().port}`, PEERS: '{}', ...TEST_SETTINGS, ...extra } });

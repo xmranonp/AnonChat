@@ -2539,7 +2539,11 @@ function renderContacts() {
         { label: t('contacts.rename'), icon: MENU_ICONS.rename, desc: t('menu.d.rename'), run: () => openRenameDialog(c) },
         { sep: true },
         { label: t('contacts.block'), icon: MENU_ICONS.block, danger: true, desc: t('menu.d.block'), run: () => blockContact(c) },
-        { label: t('contacts.remove'), icon: MENU_ICONS.trash, danger: true, desc: t('menu.d.remove'), run: async () => { if (await askConfirm(t('contacts.removeConfirm', { name: c.petname }))) removeContact(c.address); } },
+        { label: t('contacts.remove'), icon: MENU_ICONS.trash, danger: true, desc: t('menu.d.remove'), run: async () => {
+          // Their unsent messages go too, unless they are still in a group with us (the queue keeps theirs: group messages wait there too).
+          const inGroup = groups.some((g) => !g.removedMe && g.members.some((m) => m.address === c.address));
+          if (await askConfirm(t('contacts.removeConfirm', { name: c.petname }) + (inGroup ? '' : t('contacts.removeConfirmQueued')))) removeContact(c.address);
+        } },
       ]);
     };
     row.append(avWrap, txt, rowTrail(pinned, unread > 0));

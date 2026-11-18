@@ -90,5 +90,38 @@ console.log('A forget that cannot go now keeps the step (1.0.8 audit)');
   failFor(w, x, A, 3 * MIN + 15000); w.t -= 20000;
   ok('a step back of 20 s (time sync) does not open the one-in-10-minutes cap', failFor(w, x, B, 4 * MIN) === 0 && w.forgets === 1, String(w.forgets)); }
 
+console.log('Fetch first, clear out only if that does not help (1.0.9)');
+// The server fetches a failing contact's address details right after each failed try, at most every 5 minutes per contact.
+function fetchRig(opts = {}) {
+  const w = { t: 1_000_000_000_000, forgets: 0, fetches: 0, last: new Map() };
+  const x = sw.create({ now: () => w.t, forget: () => { w.forgets++; }, fetchedAt: (a) => w.last.get(a), fetchGraceMs: 2 * MIN, ...opts });
+  const fetch = (a) => { const l = w.last.get(a); if (l === undefined || w.t - l >= 5 * MIN) { w.last.set(a, w.t); w.fetches++; } };
+  const fail = (a, ms) => { const end = w.t + ms; let n = 0; while (w.t < end) { if (x.noteFail(a)) n++; fetch(a); w.t += 15000; } return n; };
+  return { w, x, fail, fetch };
+}
+{ const { w, fail } = fetchRig();
+  fail(A, 2 * MIN); ok('the first failed try fetches their address details at once, and there is no clear-out', w.fetches === 1 && w.forgets === 0, `${w.fetches}/${w.forgets}`);
+  ok('…the fetch had 3 minutes to help and the tries still fail: the clear-out comes on the 3-minute step', fail(A, 90 * 1000) === 1 && w.forgets === 1, String(w.forgets)); }
+{ const { w, x } = fetchRig();
+  w.last.set(A, w.t - 4 * MIN);           // a fetch 4 minutes ago, before the failures began (another try, a presence check)
+  let n = 0; const end = w.t + 4 * MIN; while (w.t < end) { if (x.noteFail(A)) n++; w.t += 15000; }          // no new fetch can go (5-minute limit... and none is sent here)
+  ok('a fetch from before the failures began does not count: no clear-out without a fetch in this series', n === 0 && w.forgets === 0, String(w.forgets)); }
+{ const { w, x, fetch } = fetchRig();
+  w.last.set(A, w.t - 3 * MIN);           // a fetch 3 minutes before the failures: the server's next one can only go 2 minutes in
+  let n = 0, end = w.t + 3 * MIN + 15000; while (w.t < end) { if (x.noteFail(A)) n++; fetch(A); w.t += 15000; }
+  ok('…a fetch that could only go 2 minutes in delays the clear-out: not at 3 minutes (it has had 1 minute)', n === 0 && w.fetches === 1, `${n}/${w.fetches}`);
+  end = w.t + 60000; while (w.t < end) { if (x.noteFail(A)) n++; fetch(A); w.t += 15000; }
+  ok('…it comes once that fetch has had its 2 minutes', n === 1 && w.forgets === 1, String(w.forgets)); }
+{ const { w, x, fail } = fetchRig();
+  fail(A, 3 * MIN + 15000);               // 1st clear-out (step 0)
+  w.last.set(A, w.t - 30 * MIN);          // pretend no fetch has gone since then
+  let n = 0; const end = w.t + 20 * MIN; while (w.t < end) { if (x.noteFail(A)) n++; w.t += 15000; }
+  ok('the next step also waits for a fetch sent since the step before', n === 0 && w.forgets === 1, String(w.forgets)); }
+{ const { w, x } = fetchRig({ fetchedAt: () => { throw new Error('boom'); } });
+  let threw = false, n = 0; try { const end = w.t + 10 * MIN; while (w.t < end) { if (x.noteFail(A)) n++; w.t += 15000; } } catch { threw = true; }
+  ok('a broken fetchedAt() never breaks sending, and counts as "no fetch" (no clear-out)', !threw && n === 0); }
+{ const { w, fail } = fetchRig();
+  ok('a whole day of failing with fetches: still about 14 clear-outs, not more', (fail(A, 24 * 60 * MIN), w.forgets >= 12 && w.forgets <= 15), String(w.forgets)); }
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

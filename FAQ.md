@@ -80,7 +80,13 @@ Their app can reach yours, but yours can't reach theirs. Use **Test connection**
 After a wake the app waits for the network to come back before it sends anything or checks who is online: a few seconds usually, and after a long sleep until the network has a current list of relays, at most about three minutes. Then it clears the network's memory of failed lookups and sends what was waiting. The online dots of your contacts update after the first checks that go through. Nothing is lost: messages stay in the queue.
 
 **My messages to a contact keep waiting, although they should be there.**
-If their app was restarted, the network can keep yours from finding them for many minutes. Usually their app tells yours that it is back, which clears this at once. If that doesn't reach you and your messages to them keep failing, the app clears the network's memory by itself: first after about three minutes of failing, then less often (15 minutes, an hour, every two hours), never right after you have built a circuit by hand, and not for a contact who answers but is busy. **Rebuild network path** does it at once.
+If their app was restarted, the network can keep yours from finding them for many minutes. Usually their app tells yours that it is back, which clears this at once. If that doesn't reach you and your messages to them keep failing, the app first fetches a fresh copy of their address details, which is usually all it takes (in our tests it brought a restarted contact back within seconds). Only if their messages still fail two minutes after that does it clear the network's memory: first after about three minutes of failing, then less often (15 minutes, an hour, every two hours), never right after you have built a circuit by hand, and not for a contact who answers but is busy. **Rebuild network path** does it at once.
+
+**A contact answered "busy, try again later".**
+If their app (or, later, a mailbox peer) asks for a pause, AnonChat keeps your messages and waits as long as it was asked, at most an hour, instead of trying every 15 seconds. They go out by themselves after the pause.
+
+**What happens to unsent messages when I remove a contact?**
+They are deleted with the chat; the confirmation says so. Messages that were already delivered are not affected on their side.
 
 **What do the colours beside the app name mean?**
 Cyan: ready, and your address can be found. Amber: the network is starting, or your address is not reachable yet (hover to see which). Red: the window lost its link to the app. Cyan says people can reach *you*, not that a given contact is online (that is the dot on their picture).
@@ -95,6 +101,9 @@ Signalling uses the same encrypted ratchet as messages; the audio travels throug
 
 **Why the delay?**
 A call crosses the onion network in both directions: expect 2 to 3 seconds from mouth to ear. Take turns speaking. An echo means the other side isn't cancelling it; headphones fix it.
+
+**A call says "Connecting to the Anyone network…" and doesn't ring.**
+Right after the app starts or the computer wakes, the network isn't ready yet, and a call can't be placed. Wait a moment and call again: the colour beside the app name turns cyan when it is ready.
 
 **Who can call me?**
 Only your contacts. Switch calls off in Settings → Privacy. If the call says "Reconnecting…", a circuit broke and the caller's side rebuilds it (it gives up after about a minute).

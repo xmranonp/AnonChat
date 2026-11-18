@@ -386,8 +386,12 @@ export function createCalls(h) {
     try {
       await h.sendSignal(contact, { op: 'invite', id, epk: b64e(keys.pub) });
       if (cur === c && c.state === 'calling') { c.state = 'ringing'; paintStatus(); }
-    } catch {
-      if (cur === c) finish(t('call.unreachable'), t('call.log.noAnswer'), 'out');
+    } catch (e) {
+      // Just after a start or a wake the network isn't ready yet: say so, not "unreachable" (it says nothing about them).
+      if (cur === c) {
+        if (e && e.message === 'network_not_ready') finish(t('call.notReady'), t('call.log.cancelled'), 'out');          // it never rang
+        else finish(t('call.unreachable'), t('call.log.noAnswer'), 'out');
+      }
     }
   }
 

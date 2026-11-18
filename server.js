@@ -205,7 +205,27 @@ function noteCheck(map, addr, now) {
   map.delete(addr); map.set(addr, now);
   if (map.size > 2000) map.delete(map.keys().next().value);
 }
+// A profile check asked for while the network isn't ready (just after a wake, a message that was waiting for us arrives first) waits
+// for it instead of failing: the failed lookup would be remembered for 15 minutes and the check would count as done.
+const _profileLater = new Map();          // address -> force
+let _profileLaterTimer = null;
+function profileWhenReady(addr, force) {
+  // Only people whose profile we keep (contacts, group members): a stranger's message must not take a contact's place in this list.
+  if (!store.getContacts().some((c) => c.address === addr) && !store.groupMemberSet().has(addr)) return;
+  if (_profileLater.size >= 500 && !_profileLater.has(addr)) return;
+  _profileLater.set(addr, _profileLater.get(addr) || force);
+  if (_profileLaterTimer) return;
+  const t0 = monoNow();
+  _profileLaterTimer = setInterval(() => {
+    if (!isNetReady() && monoNow() - t0 < 15 * 60 * 1000) return;
+    clearInterval(_profileLaterTimer); _profileLaterTimer = null;
+    const due = [..._profileLater]; _profileLater.clear();
+    if (isNetReady()) for (const [a, f] of due) maybeRefreshProfile(a, f);
+  }, 3000);
+  _profileLaterTimer.unref?.();
+}
 function maybeRefreshProfile(fromAddr, force = false) {
+  if (!isNetReady()) { profileWhenReady(fromAddr, force); return; }
   const now = Date.now();
   // A notice that their profile changed (a profile bump) is limited only by other notices: limited by the routine check a message
   // just made, a new picture sent right after a message was ignored until the next hourly check.
@@ -252,6 +272,9 @@ function maybeRefreshProfile(fromAddr, force = false) {
 const presence = new Map();          // address -> { online, lastSeen, fails }
 const envMs = (k, d) => { const v = parseInt(process.env[k] || '', 10); return v > 0 ? v : d; };   // the tests shorten these
 // Settings only the tests may change: the installed app (NODE_ENV=production, set by start.js) always uses the real values.
+// Milliseconds that only ever go forward: the limits below measure time between two events, and a clock set back (time sync after a
+// wake) must not hold them up for the length of the step. Starts near 0 when the app starts, so "never" is -Infinity, not 0.
+const monoNow = () => require('perf_hooks').performance.now();
 const testEnvMs = (k, d) => (process.env.NODE_ENV === 'production' ? d : envMs(k, d));
 const PRESENCE_INTERVAL_MS = envMs('PRESENCE_INTERVAL_MS', 3 * 60 * 1000);
 const PRESENCE_STAGGER_MS  = envMs('PRESENCE_STAGGER_MS', 4000);
@@ -706,11 +729,11 @@ async function bootstrapPct() {
   }
 })();
 
-let lastRenew = 0;
-let userCircuitAt = 0;               // when the user last built a circuit by hand ("New circuit")
+let lastRenew = -Infinity;
+let userCircuitAt = -Infinity;       // when the user last built a circuit by hand ("New circuit"); monotonic
 ui.post('/api/circuit/renew', async (_req, res) => {
-  if (Date.now() - lastRenew < 1500) return res.status(429).json({ error: 'too_many_requests' });
-  lastRenew = Date.now();
+  if (monoNow() - lastRenew < 1500) return res.status(429).json({ error: 'too_many_requests' });
+  lastRenew = monoNow();
   userCircuitAt = lastRenew;          // lib/stalewatch.js keeps its clear-outs away from it
   try { res.json(await circuits.renewGeneralCircuits()); }
   catch (e) { res.status(503).json({ error: e.message }); }
@@ -1033,12 +1056,18 @@ ui.post('/api/contacts/rename', (req, res) => {
 
 ui.delete('/api/contacts', (req, res) => {
   const { address } = req.body || {};
+  let dropped = 0;
   if (address) {
     store.removeContact(address);
     if (!store.getPeers().some((p) => p.address === address)) store.removeStampKey(address);
+    // Messages still waiting to be sent to them go too (the chat with them is deleted, and otherwise they would be tried until they
+    // expire, days maybe, each failure counting towards the clear-out ladder). Someone who is still in a group with us keeps theirs:
+    // group messages to them wait in the same queue and can't be told apart from the outside (the window says so). Groups an admin
+    // removed us from don't count: nothing is sent there any more.
+    if (!store.activeGroupMemberSet().has(address)) dropped = outbox.removeFor(address);
     stale.noteGone(address);
   }
-  res.json({ ok: true });
+  res.json({ ok: true, dropped });
 });
 
 // Stamp keys (lib/stamp.js) for contacts and group members, worked out by the window, which holds the identity key. `replace` sends
@@ -1130,18 +1159,20 @@ const HSFETCH_EVERY_MS = testEnvMs('HSFETCH_EVERY_MS', 5 * 60 * 1000);
 // withClear: a clear-out of the network's memory is due as well (lib/stalewatch.js). Both go on one control connection, the clear-out
 // first, so the fetch starts on a clean slate (separate connections could reach the network program in the other order).
 function refreshPeerDescriptor(addr, withClear = false) {
-  const now = Date.now();
-  const last = _lastHsFetch.get(addr) || 0;
+  const now = monoNow();
+  const last = _lastHsFetch.has(addr) ? _lastHsFetch.get(addr) : -Infinity;
   if (withClear && now - last < HSFETCH_EVERY_MS) { forgetOnionLookups(true); return; }          // the fetch isn't due: the clear-out alone
   // At most every 5 minutes per peer. Each lookup asks one of the few directories that hold their address, and the network won't ask
   // the same one again for 15 minutes: looking up every 20 s while they were away used them all up, so their new address (they came
   // back) couldn't be fetched for up to a quarter of an hour.
   if (now - last < HSFETCH_EVERY_MS) return;
-  _lastHsFetch.set(addr, now);
   // The control port wants the 56-char onion id without the TLD suffix.
   const onionId = String(addr).replace(/\.anyone$/, '').replace(/\.onion$/, '');
   if (!/^[a-z2-7]{56}$/.test(onionId)) return;          // goes into a control-port command: only ever a real address
+  _lastHsFetch.delete(addr); _lastHsFetch.set(addr, now);          // most recent last, so the bound below drops the oldest
+  if (_lastHsFetch.size > 1000) { for (const k of _lastHsFetch.keys()) { _lastHsFetch.delete(k); if (_lastHsFetch.size <= 900) break; } }
   ctrlCmd(withClear && claimForget(true) ? `SIGNAL NEWNYM\r\nHSFETCH ${onionId}` : `HSFETCH ${onionId}`).catch(() => {
+    if (_lastHsFetch.get(addr) === now) _lastHsFetch.delete(addr);          // it didn't go (control port down): it doesn't count as a fetch
   });
   dropDeadPath(addr);
 }
@@ -1151,7 +1182,6 @@ function refreshPeerDescriptor(addr, withClear = false) {
 // connections use new routes; open ones, a call say, carry on). Only when there is reason: they just wrote to us while our messages
 // to them were failing, or "Rebuild network path" was pressed. At most once a minute (manual: every 10 s, the network's own limit).
 let _lastForget = -Infinity;          // monotonic milliseconds: a clock set back can't hold the clear-outs up
-const monoNow = () => require('perf_hooks').performance.now();
 const canForget = (manual = false) => monoNow() - _lastForget >= (manual ? 10000 : 60000);          // may one go now? (nothing is counted)
 function claimForget(manual = false) {          // true (and counted) if a clear-out may go now
   if (!canForget(manual)) return false;
@@ -1187,8 +1217,11 @@ netready.check().catch(() => {});
 const staleLadder = process.env.NODE_ENV === 'production' ? [] : String(process.env.STALE_LADDER_MS || '').split(',').map((x) => parseInt(x, 10)).filter((x) => x > 0);
 // noteFail() says when a clear-out is due; the failed-retry hook (outbox.init below) sends it, together with the descriptor fetch.
 const stale = require('./lib/stalewatch').create({
+  now: monoNow,
   forget: () => canForget(true),          // a step of the ladder is only used up if a clear-out can really go (refreshPeerDescriptor sends it)
-  userCircuitRecent: () => Date.now() - userCircuitAt < testEnvMs('STALE_USER_QUIET_MS', 3 * 60 * 1000),
+  fetchedAt: (addr) => _lastHsFetch.get(addr),          // fetch first: a clear-out only after a fetch of their address details has had time to help
+  fetchGraceMs: testEnvMs('STALE_FETCH_GRACE_MS', 2 * 60 * 1000),
+  userCircuitRecent: () => monoNow() - userCircuitAt < testEnvMs('STALE_USER_QUIET_MS', 3 * 60 * 1000),
   globalCapMs: testEnvMs('STALE_CAP_MS', 10 * 60 * 1000),
   ...(staleLadder.length ? { ladderMs: staleLadder } : {}),
 });
@@ -1204,6 +1237,9 @@ const wake = require('./lib/wakewatch').create({
     wakeEpoch++;
     for (const [addr, p] of presence) presence.set(addr, { ...p, fails: 0 });          // checks made before the connection was back count for nothing
     stale.clear();
+    // The monotonic clock doesn't count time asleep on some systems: limits measured before the sleep would hold up the first fetch
+    // and route rebuild after it. They start afresh, as does "a circuit built by hand a moment ago" (that circuit is gone).
+    _lastHsFetch.clear(); _lastPathDrop.clear(); userCircuitAt = -Infinity;
   },
 });
 if (process.env.ANONCHAT_WAIT_NETWORK === '1') wake.start();
@@ -1227,8 +1263,8 @@ setInterval(() => { selfTest.tick().catch(() => {}); }, process.env.SELFTEST_FAS
 // builds a fresh route (what "Rebuild network path" does by hand). At most once a minute per contact.
 const _lastPathDrop = new Map();
 function dropDeadPath(addr) {
-  const now = Date.now();
-  if (now - (_lastPathDrop.get(addr) || 0) < 60000) return;
+  const now = monoNow();
+  if (_lastPathDrop.has(addr) && now - _lastPathDrop.get(addr) < 60000) return;
   _lastPathDrop.set(addr, now);
   if (_lastPathDrop.size > 1000) _lastPathDrop.clear();
   circuits.rebuildCircuitForContact(addr).catch(() => {});
@@ -1331,7 +1367,9 @@ ui.post('/api/send', async (req, res) => {
     return res.json({ ok: true, queued: true, queueId: qid });
   }
 
-  // Call signalling is time-critical and worthless later: two attempts at most, never queued.
+  // Call signalling is time-critical and worthless later: two attempts at most, never queued. Not while the network isn't ready (just
+  // after a start or a wake): the lookups would fail and be remembered for 15 minutes, and the window can say why at once.
+  if (!isNetReady()) return res.status(503).json({ error: 'network_not_ready' });
   const TRANSIENT = /HostUnreachable|Hs[A-Z]\w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up|Proxy connection timed out|proxy.*timed out|timed out|timeout|ESOCKETTIMEDOUT|Network Error|connect ENETUNREACH/i;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {

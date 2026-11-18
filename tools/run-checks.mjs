@@ -391,7 +391,14 @@ try {
   (m && m[2] === '0') ? pass(`quiet after a wake ${m[1]}/${m[1]}`) : fail('quiet after a wake: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('quiet after a wake — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
-console.log('\n47. One version everywhere: the app version in both package files, both lockfiles and the page; the Node version in .nvmrc and both build scripts; the CI reads .nvmrc');
+console.log('\n47. After a wake, with the real backend: a try that failed during the sleep counts for nothing, call signalling answers "not ready" at once, and removing a contact empties their queue (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/after-wake-test.mjs')], { stdio: 'pipe', timeout: 180000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`after a wake ${m[1]}/${m[1]}`) : fail('after a wake: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('after a wake — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n48. One version everywhere: the app version in both package files, both lockfiles and the page; the Node version in .nvmrc and both build scripts; the CI reads .nvmrc');
 try {
   const rd = (f) => readFileSync(join(root, f), 'utf8'), probs = [];
   const app = JSON.parse(rd('package.json')).version, desk = JSON.parse(rd('desktop/package.json')).version, lock = JSON.parse(rd('package-lock.json'));

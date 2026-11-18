@@ -275,5 +275,56 @@ ok('…the outcomes survive a restart', bigIds.every((id) => outbox._outcomes.ge
   for (const i of [...outbox.queue]) if (i.toAddress === T3) outbox._drop(i);
 }
 
+// A recipient that answers "busy, try again in an hour" is left alone that long, not retried every 15 s (1.0.9)
+{
+  const T4 = 'e'.repeat(56) + '.anyone'; let tries = 0;
+  const busy = (secs) => () => { tries++; return Object.assign(httpErr(503), { response: { status: 503, data: { error: 'full' }, headers: { 'retry-after': String(secs) } } }); };
+  answer = busy(3600);
+  const idB = outbox.enqueue(T4, { ct: 'b1', dh: 'd' }, 'me.anyone');
+  await outbox.deliverNow(idB, { tries: 1, gapMs: 10 });
+  ok('a 503 with Retry-After 3600: one try', tries === 1, String(tries));
+  await outbox._flush(); await outbox._flush(); await outbox.flushTo(T4);
+  ok('…then the rounds and "they wrote to us" leave them alone (no try during the pause)', tries === 1, String(tries));
+  const idB2 = outbox.enqueue(T4, { ct: 'b2', dh: 'd' }, 'me.anyone');
+  ok('…a new message to them waits too, without a try', (await outbox.deliverNow(idB2, { tries: 1, gapMs: 10 })) === 'queued' && tries === 1, String(tries));
+  outbox._notBefore.set(T4, Date.now() - 1000);                       // the hour is over
+  answer = () => ({ ok: true }); tries = 0;
+  const sentBefore = posted.length; await outbox._flush();
+  ok('…after the pause they are tried again, and both go', posted.length - sentBefore === 2 && !outbox.queue.some((i) => i.toAddress === T4), String(posted.length - sentBefore));
+  ok('…and a delivery ends the pause', !outbox._notBefore.has(T4));
+  answer = busy(5); tries = 0;
+  const idB3 = outbox.enqueue(T4, { ct: 'b3', dh: 'd' }, 'me.anyone');
+  await outbox.deliverNow(idB3, { tries: 1, gapMs: 10 });
+  ok('a short Retry-After (5 s) is not a pause for the rounds (the quick retry handles it)', !outbox._notBefore.has(T4));
+  answer = busy(10 * 24 * 3600); await outbox._flush();
+  const u = outbox._notBefore.get(T4);
+  ok('a Retry-After of 10 days is capped at an hour', u && u - Date.now() <= 3600 * 1000 + 50, String(u && u - Date.now()));
+  outbox._notBefore.set(T4, Date.now() + 5 * 3600 * 1000);            // further away than the cap can be: the clock was set back since
+  ok('a pause further away than the cap (clock set back) is over', outbox._resting(T4) === false && !outbox._notBefore.has(T4));
+  answer = () => ({ ok: true }); await outbox._flush();
+  for (const i of [...outbox.queue]) if (i.toAddress === T4) outbox._drop(i);
+}
+
+// 1.0.9 audit: the pause is checked by a message sent on its own, is ended by a delivery, and a message removed during its try goes no further
+{
+  const T5 = 'f'.repeat(56) + '.anyone'; let tries = 0, hooks = 0;
+  outbox._notBefore.set(T5, Date.now() + 30 * 60 * 1000);            // they asked for a pause earlier
+  answer = () => { tries++; return { ok: true }; };
+  const id5 = outbox.enqueue(T5, { ct: 'p1', dh: 'd' }, 'me.anyone');
+  ok('a message to someone who asked for a pause, with nothing waiting ahead of it: kept, no try', (await outbox.deliverNow(id5, { tries: 1, gapMs: 10 })) === 'queued' && tries === 0, String(tries));
+  const it5 = outbox.queue.find((i) => i.id === id5);
+  ok('…a delivery (even one under way when the pause was asked for) ends the pause', !!it5 && (await outbox._attempt(it5, Date.now())) === true && !outbox._notBefore.has(T5), it5 ? '' : 'the message was sent although they asked for a pause');
+  const T6 = '7'.repeat(56) + '.anyone'; tries = 0;
+  const prevHook = outbox._onRetryFail; outbox._onRetryFail = (a) => { if (a === T6) hooks++; };
+  const unreached = () => Object.assign(new Error('Socks5 proxy rejected connection - HostUnreachable'), { code: 'ESOCKS' });
+  answer = async () => { tries++; if (tries === 1) outbox.removeFor(T6); return unreached(); };          // the contact is removed during the first try
+  const id6 = outbox.enqueue(T6, { ct: 'r1', dh: 'd' }, 'me.anyone');
+  const r6 = await outbox.deliverNow(id6, { tries: 3, gapMs: 20 });
+  ok('a message removed during its first try: no second try', tries === 1 && r6 !== 'delivered', `${tries} ${r6}`);
+  ok('…and its failure is not counted against the contact (no failure hook)', hooks === 0, String(hooks));
+  ok('…removeFor records what it took out (the window can be told)', outbox.outcomes().some((o) => o.id === id6 && o.outcome === 'failed') || [...outbox._outcomes.values()].some((o) => o.toAddress === T6 && o.outcome === 'failed'));
+  outbox._onRetryFail = prevHook;
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
