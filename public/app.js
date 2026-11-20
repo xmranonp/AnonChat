@@ -5963,7 +5963,7 @@ function initLogPanel() {
       // network program says about itself.
       const selfState = (h.selfTest && h.selfTest.state) || 'idle';
       const [selfDot, selfLabel] = selfState === 'findable' ? ['ok', t('hs.self.yes')] : selfState === 'not-findable' ? ['warn', t('hs.self.no')]
-        : selfState === 'checking' ? ['idle', t('hs.self.checking')] : selfState === 'unknown' ? ['idle', t('hs.self.unknown')] : ['idle', t('hs.self.idle')];
+        : selfState === 'checking' ? ['idle', t('hs.self.checking')] : selfState === 'restarting' ? ['warn', t('hs.self.restarting')] : selfState === 'unknown' ? ['idle', t('hs.self.unknown')] : ['idle', t('hs.self.idle')];
       hsHealth.innerHTML = '';
       hsHealth.append(
         el('span', { className: 'hs-health-key', textContent: t('hs.service') }),

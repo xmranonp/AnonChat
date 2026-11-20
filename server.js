@@ -282,7 +282,9 @@ const PRESENCE_TIMEOUT_MS  = 30000;
 const PRESENCE_RECHECK_MS  = envMs('PRESENCE_RECHECK_MS', 30000);
 const PRESENCE_FRESH_MS    = envMs('PRESENCE_FRESH_MS', 2 * 60 * 1000);
 
+let otherOkMono = null;          // when another address was last reached (lib/selftest.js: is the fault ours?)
 function markSeen(address) {
+  if (address !== myAddress()) otherOkMono = monoNow();
   presence.set(address, { online: true, lastSeen: Date.now(), fails: 0 });
   stale.noteOk(address);
 }
@@ -1246,6 +1248,39 @@ if (process.env.ANONCHAT_WAIT_NETWORK === '1') wake.start();
 // Is the network ready? Asks the wake detector first, so timers that were due during a sleep don't send before the wake is noticed.
 function isNetReady() { wake.poll(); return netready.isReady(); }
 
+// Lines the network program logged since the last time this was asked, matching `re` (the log is rewritten at each start).
+let _anonLogPos = 0;
+function anonLogSince(re) {
+  let fd;
+  try {
+    fd = fs.openSync(ANON_LOG, 'r');
+    const size = fs.fstatSync(fd).size;
+    if (size < _anonLogPos) _anonLogPos = 0;
+    const from = Math.max(_anonLogPos, size - 1024 * 1024), buf = Buffer.alloc(size - from);          // at most the last MiB
+    fs.readSync(fd, buf, 0, buf.length, from); _anonLogPos = size;
+    return re.test(buf.toString('utf8'));
+  } catch { return false; } finally { if (fd != null) try { fs.closeSync(fd); } catch {} }
+}
+// Ask start.js to restart the network program; true if it did. Everything that sends waits for the network meanwhile (as after a wake),
+// and once the address is published again our contacts are told, so their apps look it up again at once.
+function requestAnonRestart() {
+  return new Promise((resolve) => {
+    const onMsg = (m) => { if (m && m.type === 'restart-anon') { done(); resolve(m.ok === true); if (m.ok === true) afterAnonRestart(); } };
+    const done = () => { clearTimeout(t); process.off('message', onMsg); };
+    const t = setTimeout(() => { done(); resolve(false); }, 5000);
+    process.on('message', onMsg);
+    netready.reset();          // first: nothing is sent from now on until the network is ready again (also if start.js says no: ~10 s)
+    try { process.send({ type: 'restart-anon' }); } catch { done(); resolve(false); }
+  });
+}
+function afterAnonRestart() {
+  console.log('[network] restarting the network program: our address could not be found');
+  wakeEpoch++;
+  for (const [addr, p] of presence) presence.set(addr, { ...p, fails: 0 });
+  stale.clear(); _lastHsFetch.clear(); _lastPathDrop.clear(); otherOkMono = null;
+  announceBack().catch(() => {});
+}
+
 // Can our own address be found through the network? (lib/selftest.js)
 const selfTest = require('./lib/selftest').create({
   probe: () => onion().get(`http://${myAddress()}/api/profile`, { timeout: 60000 }),
@@ -1253,8 +1288,14 @@ const selfTest = require('./lib/selftest').create({
   clearLookups: async () => { forgetOnionLookups(true); },
   republish: () => circuits.republishService(myAddress()),
   isReady: () => isNetReady() && !!myAddress(),
+  // 1.0.10: the last step, a restart of the network program (start.js does it; not when the backend runs on its own)
+  restartNetwork: process.env.ANONCHAT_WAIT_NETWORK === '1' && typeof process.send === 'function' ? requestAnonRestart : null,
+  otherOkAt: () => otherOkMono,
+  serviceGivesUp: async () => anonLogSince(/Giving up on launching a rendezvous circuit/),
+  canRestart: () => !callBridge.active() && !callBridge.dialing(),
+  mono: monoNow,
   log: (m) => deliveryLog.note(m),
-  timing: process.env.SELFTEST_FAST === '1' ? { settleMs: 500, okEveryMs: 4000, badEveryMs: 2000, againMs: 1500, republishEveryMs: 5000 } : {},    // the tests
+  timing: process.env.SELFTEST_FAST === '1' ? { settleMs: 500, okEveryMs: 4000, badEveryMs: 2000, againMs: 1500, republishEveryMs: 5000, restartAfterMs: 8000, restartGapMs: 30000 } : {},    // the tests
 });
 setInterval(() => { selfTest.tick().catch(() => {}); }, process.env.SELFTEST_FAST === '1' ? 700 : 15000);
 

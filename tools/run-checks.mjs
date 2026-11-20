@@ -416,5 +416,12 @@ try {
   probs.length ? fail('versions: ' + probs.join('; ')) : pass(`versions: app ${app}, Node ${nvm}, Electron ${el}`);
 } catch (e) { fail('versions — ' + e.message); }
 
+console.log('\n49. Our own address stays unfindable and the network program gives up on connections to it: start.js restarts it once and keeps its own limit; one that stops on its own still stops everything (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/restart-test.mjs')], { stdio: 'pipe', timeout: 240000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`restart ${m[1]}/${m[1]}`) : fail('restart: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('restart — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

@@ -72,5 +72,62 @@ console.log('5. Test connection asks now');
   w.t += 21000; await s.runNow(); ok('after that, again', w.probes === 2);
   const a = s.run(), b = s.run(); await Promise.all([a, b]); ok('two at once share one look', w.probes === 3); }
 
+console.log('6. Still unfindable after 20 minutes, plainly our fault: restart the network program (1.0.10)');
+// a rig with the restart wired; ticks every 15 s like the server, for `ms`
+function rigR(o = {}) {
+  const x = { restarts: 0, accept: true, otherOk: null, givesUp: false, call: false, m: 0 };
+  const r = rig({ restartNetwork: async () => { x.restarts++; return x.accept; }, otherOkAt: () => x.otherOk, serviceGivesUp: async () => x.givesUp,
+    canRestart: () => !x.call, mono: () => x.m, ...o });
+  r.w.probeErr = socks('IntroductionFailed');
+  const run = async (ms) => { for (let d = 0; d < ms; d += 15000) { r.w.t += 15000; x.m += 15000; await r.s.tick(); } };
+  return { ...r, x, run };
+}
+{ const { w, s, x, run } = rigR(); x.givesUp = true;
+  await run(st.SETTLE_MS + 19 * MIN);
+  ok('not before 20 minutes of failing', x.restarts === 0 && w.reposts >= 1, JSON.stringify([x.restarts, w.reposts]));
+  await run(3 * MIN);
+  ok('after 20 minutes, with the network program giving up on connections to us: restarted once', x.restarts === 1 && s.status().restarts === 1);
+  ok('…and the log says why', w.log.some((m) => /network program was restarted/.test(m) && /giving up/.test(m)), w.log.join('|'));
+  await run(5 * 60 * MIN);
+  ok('still failing: not again within 6 hours', x.restarts === 1);
+  await run(70 * MIN);
+  ok('after 6 hours it may restart once more', x.restarts === 2, String(x.restarts)); }
+{ const { w, x, run } = rigR();
+  x.otherOk = x.m; await run(st.SETTLE_MS + 22 * MIN);
+  ok('no rendezvous give-ups, but other addresses were reached 22 minutes ago: not "recent", no restart', x.restarts === 0);
+  const go = async () => { x.otherOk = x.m; await run(15000); };
+  for (let i = 0; i < 16; i++) await go();
+  ok('other addresses reached a moment ago: restarted', x.restarts === 1, String(x.restarts)); }
+{ const { x, run } = rigR();
+  await run(3 * 60 * MIN);
+  ok('nobody else reached and no give-ups (the network may be down): never restarted', x.restarts === 0); }
+{ const { x, run } = rigR(); x.givesUp = true; x.call = true;
+  await run(st.SETTLE_MS + 30 * MIN);
+  ok('never during a call', x.restarts === 0);
+  x.call = false; await run(4 * MIN);
+  ok('…and once the call is over', x.restarts === 1); }
+{ const { w, x, run } = rigR(); x.givesUp = true; w.repostOk = false;
+  await run(st.SETTLE_MS + 60 * MIN);
+  ok('not unless sending the details again was tried first (a refused send is not a try)', x.restarts === 0); }
+{ const { w, s, x, run } = rigR(); x.givesUp = true; x.accept = false;
+  await run(st.SETTLE_MS + 25 * MIN);
+  ok('a refused restart is not counted or logged…', x.restarts === 1 && s.status().restarts === 0 && !w.log.some((m) => /was restarted/.test(m)));
+  await run(60 * MIN); ok('…and not asked again for 6 hours', x.restarts === 1); }
+{ const { w, s, x, run } = rigR(); x.givesUp = true;
+  await run(st.SETTLE_MS + 10 * MIN); w.probeErr = null; await run(4 * MIN);
+  ok('found again meanwhile: the 20 minutes start over', s.status().state === 'findable');
+  w.probeErr = socks('IntroductionFailed'); await run(st.OK_EVERY_MS + 15 * MIN);
+  ok('…so 15 minutes of a new series are not enough', x.restarts === 0, String(x.restarts)); }
+{ const { w, x, run } = rigR(); x.givesUp = true; w.probeErr = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:9050'), { code: 'ECONNREFUSED' });
+  await run(60 * MIN); ok('the network program not running is not our address\'s fault: no restart', x.restarts === 0); }
+{ const { w, x, run } = rigR(); x.givesUp = true;
+  await run(st.SETTLE_MS + 10 * MIN); w.t -= 2 * 60 * MIN;          // the wall clock set back two hours
+  await run(11 * MIN); ok('a clock set back does not hold the restart up (a steady clock counts the 20 minutes)', x.restarts === 1); }
+{ const { s, x, run, w } = rigR(); x.givesUp = true; let pub = true;
+  w.published = true; await run(st.SETTLE_MS + 21 * MIN);
+  ok('after the restart the address is looked at again only once it is published and settled', s.status().state === 'restarting' || s.status().state === 'idle', s.status().state); }
+{ const { x, run } = rigR({ restartNetwork: null }); x.givesUp = true;
+  await run(60 * MIN); ok('without a way to restart (the backend run on its own) nothing is tried', x.restarts === 0); }
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

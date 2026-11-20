@@ -67,9 +67,12 @@ CookieAuthentication 1
 SocksPort 127.0.0.1:${ports.socks} ExtendedErrors
 SocksPolicy accept 127.0.0.1
 SocksPolicy reject *
+SafeSocks 1
 DataDirectory ${anonDirForRc}
 HiddenServiceDir ${serviceDir}
 HiddenServicePort 80 127.0.0.1:${PUBLIC_PORT}
+# SafeSocks: a request that gives an IP address instead of a name is refused, so no program using this port can look names up outside
+# the network (AnonChat itself only ever gives names: socks5h).
 # ExtendedErrors: when an address can't be reached, the network says why (not found, introduction failed…); the Status log shows it.
 # Traffic-analysis protection: dummy traffic on the link to the first relay always (the default pads only when the relay
 # supports it); route padding and relays from distinct networks on each route, both defaults, stated so they stay on.
@@ -96,7 +99,8 @@ ${geoLines.map((l) => l + '\n').join('')}`);
   const serverEnv = { ...childEnv, ANONCHAT_UI_TOKEN: UI_TOKEN, NODE_ENV: 'production', ANONCHAT_WAIT_NETWORK: '1' };
   if (process.env.ANONCHAT_KEY_STDIN === '1') serverEnv.ANONCHAT_KEY_STDIN = '1';
   // Use process.execPath, not a bare 'node': it is the bundled runtime in the packaged app, and works when PATH has no node.
-  const server = spawn(process.execPath, [path.join(ROOT, 'server.js')], { cwd: ROOT, stdio: 'inherit', windowsHide: true, env: serverEnv });
+  // A message channel as well (1.0.10): the backend can ask for the network program to be restarted (server.on('message') below).
+  const server = spawn(process.execPath, [path.join(ROOT, 'server.js')], { cwd: ROOT, stdio: ['inherit', 'inherit', 'inherit', 'ipc'], windowsHide: true, env: serverEnv });
   children.push(server);
   // The backend stopping on its own (its port taken by another program, an unreadable data key…) stops the Anyone network program too:
   // the address must never stay published with nothing of ours behind it.
@@ -105,33 +109,62 @@ ${geoLines.map((l) => l + '\n').join('')}`);
   // Pipe anon's output so the UI can show it (/api/logs) while still echoing it to the console.
   const ANON_LOG = path.join(ANON_DIR, 'anon.log');
   const logStream = fs.createWriteStream(ANON_LOG, { flags: 'w' });
-  const anon = spawn(ANON_BIN, ['-f', ANONRC], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: childEnv });
-  if (anon.stdout) anon.stdout.on('data', c => { process.stdout.write(c); logStream.write(c); });
-  if (anon.stderr) anon.stderr.on('data', c => { process.stderr.write(c); logStream.write(c); });
-  children.push(anon);
-  anon.on('error', (err) => {
-    if (err.code === 'ENOENT') {
-      console.error(`
+  let anon = null, restarting = false, lastRestart = -Infinity;
+  const RESTART_GAP_MS = Number(process.env.ANONCHAT_TEST_RESTART_GAP_MS) > 0 ? Number(process.env.ANONCHAT_TEST_RESTART_GAP_MS) : 6 * 60 * 60 * 1000;          // the tests shorten it
+  function launchAnon() {
+    const child = spawn(ANON_BIN, ['-f', ANONRC], { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: childEnv });
+    anon = child;
+    if (child.stdout) child.stdout.on('data', c => { process.stdout.write(c); logStream.write(c); });
+    if (child.stderr) child.stderr.on('data', c => { process.stderr.write(c); logStream.write(c); });
+    children.push(child);
+    child.on('error', (err) => {
+      if (err.code === 'ENOENT') {
+        console.error(`
   [error] Could not run '${ANON_BIN}' (not found).
     Download an anon binary (v0.4.10.4-beta or newer) from:
       https://github.com/anyone-protocol/ator-protocol/releases
     then either put it on your PATH as 'anon', or:
       ANON_BINARY=/path/to/anon npm start
 `);
-    } else {
-      console.error(`\n  [error] Failed to launch '${ANON_BIN}': ${err.message}\n`);
-    }
-    shutdown(1);
-  });
-  // The network program stopping, for any reason, stops everything: its ports become free, and another program could take them and
-  // receive what the backend sends (contact addresses, envelopes, the key lookups of contacts being added).
-  anon.on('exit', (code, signal) => {
-    if (shuttingDown) return;
-    const how = code != null ? `code ${code}` : `signal ${signal}`;
-    console.error(printed
-      ? `\n  [error] anon stopped (${how}). Stopping AnonChat: nothing is sent without it.\n`
-      : `\n  [error] anon exited (${how}) before publishing an address.\n`);
-    shutdown(EXIT_ANON_STOPPED);
+      } else {
+        console.error(`\n  [error] Failed to launch '${ANON_BIN}': ${err.message}\n`);
+      }
+      shutdown(1);
+    });
+    // The network program stopping, for any reason, stops everything: its ports become free, and another program could take them and
+    // receive what the backend sends (contact addresses, envelopes, the key lookups of contacts being added). The one exception is a
+    // restart the backend asked for, and then only the stop that restart caused.
+    child.on('exit', (code, signal) => {
+      const i = children.indexOf(child); if (i >= 0) children.splice(i, 1);
+      if (shuttingDown) return;
+      if (restarting && child !== anon) return;
+      if (restarting) {
+        restarting = false;
+        logStream.write(`\n---- AnonChat restarted the network program: your address could not be found ----\n`);
+        launchAnon();
+        return;
+      }
+      const how = code != null ? `code ${code}` : `signal ${signal}`;
+      console.error(printed
+        ? `\n  [error] anon stopped (${how}). Stopping AnonChat: nothing is sent without it.\n`
+        : `\n  [error] anon exited (${how}) before publishing an address.\n`);
+      shutdown(EXIT_ANON_STOPPED);
+    });
+  }
+  launchAnon();
+
+  // The backend's self-test (lib/selftest.js) asks for a restart when our own address has stayed unfindable and the fault is plainly in
+  // our network program (measured on a mailbox peer: only a restart brought its address back). A limit of its own here too: at most once in
+  // 6 hours. The backend holds everything it sends until the network is ready again.
+  server.on('message', (m) => {
+    if (!m || m.type !== 'restart-anon' || shuttingDown || restarting || !anon) return;
+    const now = require('perf_hooks').performance.now();          // steady: a clock change can't shorten the 6 hours
+    if (now - lastRestart < RESTART_GAP_MS) { try { server.send({ type: 'restart-anon', ok: false }); } catch {} return; }
+    lastRestart = now; restarting = true;
+    const old = anon;
+    try { server.send({ type: 'restart-anon', ok: true }); } catch {}
+    try { old.kill('SIGINT'); } catch {}          // a client exits at once on SIGINT; Windows stops it outright
+    setTimeout(() => { if (restarting && old.exitCode == null && old.signalCode == null) try { old.kill('SIGKILL'); } catch {} }, 15000).unref();
   });
 
   let printed = false;

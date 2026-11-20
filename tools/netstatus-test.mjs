@@ -49,5 +49,8 @@ try {
 {
   const src = readFileSync(join(APP, 'start.js'), 'utf8');
   ok('anonrc asks for connection padding always, route padding and distinct subnets', /^ConnectionPadding 1$/m.test(src) && /^CircuitPadding 1$/m.test(src) && /^EnforceDistinctSubnets 1$/m.test(src));
+  // 1.0.10: an IP address given to the SOCKS port is refused (no name lookups outside the network, also for other programs that use it);
+  // TestSocks stays off (it would log a line, with its time, for every connection)
+  ok('anonrc refuses SOCKS requests that give an IP address (SafeSocks 1), without TestSocks', /^SafeSocks 1$/m.test(src) && !/TestSocks/.test(src));
 }
 console.log(`${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
