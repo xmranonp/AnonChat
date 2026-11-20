@@ -1368,12 +1368,14 @@ function initOutbox() {
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
   });
   // After the listeners: messages that ran out of time while the app was closed are reported too.
-  // A failed retry: if they answered (busy, refused) they are reachable, which ends a series of failures; if they could not be reached,
+  // A failed retry: if they answered (busy, refused) they are reachable, which ends a series of failures and asks nothing of the network; if they could not be reached,
   // it counts, and a clear-out that is due goes with the descriptor fetch, first (refreshPeerDescriptor).
   outbox.init({ onion, pow, myAddress, stamp: restampQueued, ready: () => isNetReady(),
     epoch: () => wakeEpoch,
     onRetryFail: (addr, err, epoch) => {
-      if (err && err.response) { stale.noteOk(addr); refreshPeerDescriptor(addr); return; }
+      // They answered (busy, refused...): their address works, so no fetch of its details and no new route (1.0.10; until 1.0.9 every
+      // busy answer cost both, at most every 5 minutes and every minute, although they were plainly reachable).
+      if (err && err.response) { stale.noteOk(addr); return; }
       if (epoch !== wakeEpoch || !isNetReady()) return;          // the try began before a sleep, or the network isn't ready: not their fault, and no fetch (it would be remembered for 15 minutes)
       refreshPeerDescriptor(addr, stale.noteFail(addr));
     } });

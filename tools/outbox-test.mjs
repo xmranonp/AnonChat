@@ -326,5 +326,33 @@ ok('…the outcomes survive a restart', bigIds.every((id) => outbox._outcomes.ge
   outbox._onRetryFail = prevHook;
 }
 
+// 1.0.10: Retry-After as an HTTP date; the pause is kept across a restart of the app
+{
+  const { retryAfterSeconds } = require(join(APP, 'lib/outbox.js'));
+  ok('Retry-After in seconds', retryAfterSeconds('120') === 120);
+  const r = retryAfterSeconds(new Date(Date.now() + 2 * 3600 * 1000).toUTCString());
+  ok('Retry-After as an HTTP date (two hours ahead)', r > 7190 && r <= 7200, String(r));
+  ok('…a date in the past is no wait; anything else is ignored', retryAfterSeconds('Mon, 01 Jan 2001 00:00:00 GMT') === 0 && retryAfterSeconds('soon') === null && retryAfterSeconds('') === null && retryAfterSeconds('1e9') === null);
+  const T7 = 'g'.repeat(56) + '.anyone'; let tries = 0;
+  answer = () => { tries++; return Object.assign(httpErr(503), { response: { status: 503, data: {}, headers: { 'retry-after': new Date(Date.now() + 1800 * 1000).toUTCString() } } }); };
+  const id7 = outbox.enqueue(T7, { ct: 'h1', dh: 'd' }, 'me.anyone');
+  await outbox.deliverNow(id7, { tries: 1, gapMs: 10 });
+  const u7 = outbox._notBefore.get(T7);
+  ok('a Retry-After date half an hour ahead: a pause of half an hour', u7 && Math.abs(u7 - Date.now() - 1800 * 1000) < 2000, String(u7 && u7 - Date.now()));
+  // the app restarts: a fresh queue reads the saved index
+  const modPath = require.resolve(join(APP, 'lib/outbox.js')); delete require.cache[modPath];
+  const ob2 = require(modPath); let tries2 = 0;
+  ob2.init({ onion: () => ({ post: async () => { tries2++; return { data: {} }; } }), pow: {}, myAddress: () => 'me.anyone' });
+  ok('after a restart the pause is still there…', ob2._resting(T7) && Math.abs(ob2._notBefore.get(T7) - u7) < 5, String(ob2._notBefore.get(T7)));
+  await ob2._flush();
+  ok('…and the message waits it out (no try)', tries2 === 0 && ob2.queue.some((i) => i.id === id7), String(tries2));
+  ob2._notBefore.set(T7, Date.now() + 5 * 3600 * 1000); ob2._savedIndex = null; ob2._save();
+  delete require.cache[modPath]; const ob3 = require(modPath); ob3.init({ onion: () => ({ post: async () => ({ data: {} }) }), pow: {}, myAddress: () => 'me.anyone' });
+  ok('a saved pause further away than the cap (the clock was set back) is dropped on load', !ob3._notBefore.has(T7));
+  clearTimeout(ob2._timer); clearTimeout(ob3._timer); ob2._timer = ob3._timer = null;
+  for (const o of [ob2, ob3]) for (const i of [...o.queue]) o._drop(i);
+  delete require.cache[modPath];
+}
+
 console.log(`${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

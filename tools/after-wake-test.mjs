@@ -1,10 +1,10 @@
-// 1.0.9, with the real backend, a fake Anyone control port and a fake SOCKS proxy (needs `npm install`):
+// 1.0.9 (and 1.0.10), with the real backend, a fake Anyone control port and a fake SOCKS proxy (needs `npm install`):
 //   1. a try that began before a sleep and fails after it: not counted against the contact, no descriptor fetch (it would be remembered
 //      by the network for 15 minutes), no second try while the network isn't ready (the 1.0.8 audit's server-level gate);
 //   2. call signalling while the network isn't ready after a wake: an answer at once ("network_not_ready"), no lookup;
 //   3. removing a contact takes their queued messages out of the queue;
-//   4. fetch first: a contact that keeps failing gets no clear-out (NEWNYM) until a fetch of its address details made during the failures
-//      has had time to help (a fetch from before they started failing does not count).
+//   4. a contact that answers busy is reachable: nothing is asked of the network (1.0.10); then, failing, it gets no clear-out (NEWNYM)
+//      until a fetch of its address details made during the failures has had time to help.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -109,7 +109,9 @@ try {
   const W = 'w'.repeat(56) + '.anyone'; busy.add(W);
   const hb = await hsfetchesOf(W);
   await ui('/api/send', 'POST', { toAddress: W, envelope: env, offlineTtl: 3600 });
-  ok('they answer "busy": reachable, and their address details are fetched once', await until(async () => (await hsfetchesOf(W)) === hb + 1, 5000), `${await hsfetchesOf(W) - hb}`);
+  ok('they answer "busy": a try was made', await until(async () => to(W) >= 1, 5000), String(to(W)));
+  await wait(3000);
+  ok('…they are reachable, so nothing is asked of the network: no fetch of their address details (1.0.10)', (await hsfetchesOf(W)) === hb, `${await hsfetchesOf(W) - hb}`);
   busy.delete(W);                                                   // now they can't be reached at all
   const n0 = await newnyms(), w0 = to(W);
   ok('then their messages start failing', await until(async () => to(W) > w0, 20000), String(to(W) - w0));
@@ -117,12 +119,12 @@ try {
   let tFetch = null, tClear = null, fetchesAtClear = null; const tw = Date.now();
   while (Date.now() - tw < 60000 && tClear === null) {
     const [f, n] = [await hsfetchesOf(W), await newnyms()];
-    if (tFetch === null && f >= hb + 2) tFetch = Date.now();
+    if (tFetch === null && f >= hb + 1) tFetch = Date.now();
     if (n > n0) { tClear = Date.now(); fetchesAtClear = f - hb; }
     await wait(250);
   }
   ok('a clear-out comes in the end (they keep failing)', tClear !== null, 'none in 60 s');
-  ok('…not while the only fetch was the one from before the failures', fetchesAtClear !== null && fetchesAtClear >= 2, `fetches when it came: ${fetchesAtClear}`);
+  ok('…not before a fetch made during the failures', fetchesAtClear !== null && fetchesAtClear >= 1, `fetches when it came: ${fetchesAtClear}`);
   ok('…and only once the fetch made during the failures had its time (3 s here)', tFetch !== null && tClear !== null && tClear - tFetch >= 2500, `fetch at +${tFetch && tFetch - tw} ms, clear-out at +${tClear && tClear - tw} ms`);
 } finally { srv.kill('SIGCONT'); srv.kill(); fk.kill(); socks.close(); }
 console.log(`\n${pass} passed, ${fail} failed`); process.exit(fail ? 1 : 0);
