@@ -318,13 +318,23 @@ async function presenceSweep() {
   _sweeping = true;
   try { await presenceSweepOnce(); } finally { _sweeping = false; }
 }
+// Four contacts at a time (1.0.11). One after another, a contact who is away held the sweep up to 30 s, so with many contacts away a
+// sweep took far longer than the 3 minutes between sweeps and the dots went stale. Each of the four still waits a few seconds between
+// its checks, so the network sees a steady trickle, not a burst.
+const PRESENCE_PARALLEL = 4;
 async function presenceSweepOnce() {
-  for (const c of store.getContacts()) {
-    if (!isNetReady()) return;          // the computer slept during the sweep, or the network dropped: the next sweep starts afresh
-    if (Date.now() - (presence.get(c.address)?.lastSeen || 0) < PRESENCE_FRESH_MS) continue;
-    await checkPresence(c.address);
-    await new Promise(r => setTimeout(r, PRESENCE_STAGGER_MS));
-  }
+  const due = store.getContacts().map((c) => c.address);
+  let next = 0;
+  const worker = async () => {
+    while (next < due.length) {
+      if (!isNetReady()) return;          // the computer slept during the sweep, or the network dropped: the next sweep starts afresh
+      const addr = due[next++];
+      if (Date.now() - (presence.get(addr)?.lastSeen || 0) < PRESENCE_FRESH_MS) continue;
+      await checkPresence(addr);
+      await new Promise(r => setTimeout(r, PRESENCE_STAGGER_MS));
+    }
+  };
+  await Promise.all(Array.from({ length: PRESENCE_PARALLEL }, worker));
 }
 setInterval(presenceSweep, PRESENCE_INTERVAL_MS);
 setTimeout(presenceSweep, envMs('PRESENCE_FIRST_MS', 15000));

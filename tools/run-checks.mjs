@@ -437,5 +437,12 @@ try {
   (m && m[2] === '0') ? pass(`parked ${m[1]}/${m[1]}`) : fail('parked: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('parked — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n52. The online check runs four contacts at a time (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/presence-test.mjs')], { stdio: 'pipe', timeout: 90000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`online check ${m[1]}/${m[1]}`) : fail('online check: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('online check — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

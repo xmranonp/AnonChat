@@ -20,7 +20,8 @@ const httpErr = (status, data = {}) => Object.assign(new Error('Request failed w
 
 let answer = () => ({});                 // what the recipient does with the next POST
 const posted = [];
-const onion = () => ({ post: async (url, body) => { posted.push(body); const a = await answer(body); if (a instanceof Error) throw a; return { data: a }; } });
+const optsOf = new Map();
+const onion = () => ({ post: async (url, body, o) => { posted.push(body); optsOf.set(body, o); const a = await answer(body); if (a instanceof Error) throw a; return { data: a }; } });
 let key = null;
 outbox.init({ onion, pow: { solveAsync: async () => 'nonce' }, myAddress: () => 'me.anyone',
   stamp: (env, from, to) => { const { stamp: _s, ...plain } = env; return key ? { ...plain, stamp: key + ':' + to } : plain; } });
@@ -352,6 +353,23 @@ ok('…the outcomes survive a restart', bigIds.every((id) => outbox._outcomes.ge
   clearTimeout(ob2._timer); clearTimeout(ob3._timer); ob2._timer = ob3._timer = null;
   for (const o of [ob2, ob3]) for (const i of [...o.queue]) o._drop(i);
   delete require.cache[modPath];
+}
+
+// 1.0.11: a try has time for its upload: 45 s plus the time at 16 KiB/s, at most 6 minutes
+{
+  const T8 = 'h'.repeat(56) + '.anyone'; answer = () => ({ ok: true });
+  outbox._onion = onion;
+  const big = 'A'.repeat(4 * 1024 * 1024);
+  const id8 = outbox.enqueue(T8, { ct: big, dh: 'd' }, 'me.anyone');
+  await outbox.deliverNow(id8, { tries: 1, gapMs: 10 });
+  const o8 = optsOf.get(posted.find((b) => b.ct === big));
+  ok('a 4 MB message gets 45 s + 256 s for its try', o8 && o8.timeout === 45000 + 256000, JSON.stringify(o8));
+  const id9 = outbox.enqueue(T8, { ct: 'small', dh: 'd' }, 'me.anyone');
+  await outbox.deliverNow(id9, { tries: 1, gapMs: 10 });
+  const o9 = optsOf.get(posted.find((b) => b.ct === 'small'));
+  ok('a short message keeps about 45 s', o9 && o9.timeout === 46000, JSON.stringify(o9));
+  const { uploadTimeoutMs } = require(join(APP, 'lib/outbox.js'));
+  ok('never more than 6 minutes', uploadTimeoutMs({ ct: 'A'.repeat(20 * 1024 * 1024) }) === 360000);
 }
 
 console.log(`${pass} passed, ${fail} failed`);
