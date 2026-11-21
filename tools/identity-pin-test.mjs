@@ -33,7 +33,8 @@ const FNS = ['identityMismatch', 'sessionMatchesPin', 'discardSession', 'pinnedS
   'richSendAllowed', 'shownError', 'errorText', 'textOnlyError', 'deliver', 'withSessionLock', 'incomingId',
   'quoteFor', 'messageAuthorLabel', 'messageGist', 'personLabel', 'kindLabel',
   'peerByAddress', 'inAnyGroup', 'keyHolder', 'ensurePeer', 'applyGroupFrame', 'replayHeldGroupFrames', 'deliverToGroup',
-  'cleanFrame', 'cleanMember', 'keepForMember', 'sendGroupWaiting', 'saveGroupWaiting', 'writtenOrderTs', 'resendOnAdoptedSession'];
+  'cleanFrame', 'cleanMember', 'keepForMember', 'sendGroupWaiting', 'saveGroupWaiting', 'writtenOrderTs', 'resendOnAdoptedSession',
+  'processEnvelope', 'ackEnvelopes', 'parkEnvelope', 'parkedInReach', 'retryParkedSoon', 'retryParked'];
 // Constants the extracted functions use, read from app.js too.
 const constOf = (name) => { const m = new RegExp(`^const ${name} = (.*);$`, 'm').exec(APP); if (!m) throw new Error('const not found: ' + name); return new Function(`return (${m[1]});`)(); };
 const SRC = FNS.map(extract).join('\n\n');
@@ -61,7 +62,7 @@ async function makeParty(name, address) {
     spk: { priv: await crypto.subtle.exportKey('jwk', spkKp.privateKey), pub: b64.enc(await crypto.subtle.exportKey('raw', spkKp.publicKey)) },
     ikSig: await Ratchet.genSigningKey(),
     contacts: [], serverContacts: [], blocked: [], sessions: new Map(), store: new Map(), threads: new Map(), thread: [], toasts: [], processed: new Set(),
-    requests: {}, groups: [], opened: null, invitesApplied: [], wire: [], peers: [], peerFetches: 0,
+    requests: {}, groups: [], opened: null, invitesApplied: [], wire: [], peers: [], peerFetches: 0, inbox: new Map(),
   };
   P.spkSig = await Ratchet.signSPK(P.ikSig.priv, P.spk.pub);
   P.card = () => ({ address: P.address, petname: P.name, ecdhPub: P.ikPub, ratchetPub: P.spk.pub, ikSigPub: P.ikSig.pub, spkSig: P.spkSig });
@@ -86,6 +87,10 @@ async function makeParty(name, address) {
       return reply(200, card);
     }
     if (url === '/api/blocked' && opts.method === 'POST') { P.blocked.push(body.address); return reply(200, { ok: true }); }
+    // the backend's inbox, for parked messages (1.0.11)
+    if (url === '/api/messages/park') { const out = body.ids.filter((id) => P.inbox.has(id)); for (const id of out) P.inbox.get(id).parked = true; P.parkCalls = (P.parkCalls || 0) + 1; return reply(200, { parked: out }); }
+    if (url.startsWith('/api/messages/parked?from=')) { const f = decodeURIComponent(url.split('=')[1]); return reply(200, [...P.inbox.values()].filter((x) => x.parked && x.env.from === f).map((x) => x.env)); }
+    if (url === '/api/messages/ack') { for (const id of body.ids) P.inbox.delete(id); return reply(200, { ok: true }); }
     if (url === '/api/send') {                       // the backend hands the envelope to the peer's inbox
       const peer = NET.get(body.toAddress);
       if (peer) peer.wire.push({ id: 'w' + (++wireSeq), ...body.envelope, from: P.address, receivedAt: Date.now() });
@@ -134,6 +139,7 @@ async function makeParty(name, address) {
     THUMB_RE: constOf('THUMB_RE'), OFFLINE_TTL_DEFAULT: constOf('OFFLINE_TTL_DEFAULT'), MEMBER_ADDR_RE: constOf('MEMBER_ADDR_RE'), OPK_USE_MS: 7 * 24 * 3600 * 1000,
     offerNewSession: (a, force, why) => { (P.offers = P.offers || []).push({ a, why }); },
     tellNowARequest: (a) => { (P.told = P.told || []).push(a); },
+    _parkedFrom: new Set(), _parkRetry: new Map(), contactsLoaded: Promise.resolve(), setTimeout,
     groupWaiting: [], _groupWaitBusy: new Set(), GROUP_WAIT_MS: 24 * 3600 * 1000, GROUP_WAIT_MAX_BYTES: 64 * 1024 * 1024, GROUP_WAIT_KEY: 'gw', b64,
   };
   const names = Object.keys(env);
@@ -481,6 +487,48 @@ console.log('14. A kind of message this version doesn\u2019t know (a later versi
   ok('in a group: nothing shown and nothing held', alice.thread.length === n && !alice.thread.some((m) => m.k === 'grp:g1'));
   await receive(alice, await send(bob, alice.card(), B, 'team hi', { meta: { grp: 'g1' } }));
   ok('…while ordinary group messages still show', alice.thread.some((m) => m.k === 'grp:g1' && m.text === 'team hi'));
+}
+
+console.log('15. A message far ahead of the earlier ones is parked, and read once they are in (1.0.11)');
+{
+  const [alice, bob] = await fresh();
+  alice.addContact(bob); bob.addContact(alice);
+  ok('a first message, read', (await receive(alice, await send(bob, alice.card(), B, 'hello'))) === 'ok');
+  const later = [];
+  for (let i = 1; i <= 2101; i++) later.push(await send(bob, alice.card(), B, 'm' + i));
+  const arrive = (env) => { alice.inbox.set(env.id, { env, parked: false }); return alice.processEnvelope(env); };
+  const toasts0 = alice.toasts.length, offers0 = (alice.offers || []).length;
+  const far = later[2100];
+  ok('the 2,101st message arrives first: parked (it is 2,100 ahead)', (await arrive(far)) === 'parked' && alice.inbox.get(far.id)?.parked === true);
+  ok('…no error shown, no new session offered, not counted as a failure', alice.toasts.length === toasts0 && (alice.offers || []).length === offers0 && !alice._inboundFails?.has?.(far.id));
+  const near = later[1];
+  ok('a message within reach (2 ahead) is read as before', (await arrive(near)) === true && texts(alice, B).includes('m2'));
+  for (let i = 0; i < 100; i++) if (i !== 1) { const e = later[i]; if ((await arrive(e)) === true) alice.inbox.delete(e.id); }
+  await new Promise((r) => setTimeout(r, 300));
+  ok('once the earlier ones are within 2,000, the parked one is read and acked', texts(alice, B).includes('m2101') && !alice.inbox.has(far.id), String(alice.inbox.has(far.id)));
+  let all = true;
+  for (let i = 100; i < 2100; i++) { const r = await arrive(later[i]); if (r !== true) { all = false; break; } }
+  ok('…and the ones in between still arrive (their keys were kept)', all && texts(alice, B).filter((t) => /^m\d+$/.test(t)).length === 2101, String(texts(alice, B).filter((t) => /^m\d+$/.test(t)).length));
+  const again = { ...later[5], id: 'copy-of-5' };
+  alice.inbox.set(again.id, { env: again, parked: false });
+  ok('a copy of a message already read is still refused (not shown twice)', (await alice.processEnvelope(again)) !== 'parked' && texts(alice, B).filter((t) => t === 'm6').length === 1);
+}
+{
+  const [alice, bob, eve] = await fresh();
+  alice.addContact(bob); bob.addContact(alice);
+  await receive(alice, await send(bob, alice.card(), B, 'hello'));
+  const msgs = []; for (let i = 1; i <= 2002; i++) msgs.push(await send(bob, alice.card(), B, 'x' + i));
+  const far = msgs[2001]; alice.inbox.set(far.id, { env: far, parked: false });
+  ok('2,002 ahead: parked', (await alice.processEnvelope(far)) === 'parked');
+  const far2 = msgs[1999]; alice.inbox.set(far2.id, { env: far2, parked: false });
+  ok('2,000 ahead: within the new limit (256 before), read at once', (await alice.processEnvelope(far2)) === true && texts(alice, B).includes('x2000'));
+  await new Promise((r) => setTimeout(r, 300));
+  ok('…and that brought the parked one within reach: read too', texts(alice, B).includes('x2002') && !alice.inbox.has(far.id));
+  // someone who isn't a contact: never parked (a stranger's message far ahead is not kept)
+  const e1 = await send(eve, alice.card(), E, 'hi'); await receive(alice, e1);
+  const em = []; for (let i = 0; i < 2003; i++) em.push(await send(eve, alice.card(), E, 'y' + i));
+  alice.inbox.set(em[2002].id, { env: em[2002], parked: false });
+  ok('a stranger\'s message far ahead is not parked', (await alice.processEnvelope(em[2002])) !== 'parked');
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

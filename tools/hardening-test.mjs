@@ -90,7 +90,7 @@ console.log('Who our contacts are (proof of work asked before any check that dep
   try {
     for (let i = 0; i < 200; i++) { try { await fetch('http://127.0.0.1:6431/api/version', { headers: { 'X-AnonChat-Token': TOKEN } }); break; } catch { await new Promise((r) => setTimeout(r, 150)); } }
     let k = 0;
-    const probe = (from) => post3(JSON.stringify({ from, dh: 'd', ct: 'probe' + (k++), n: 0, x3dh: { ik: 'WRONG', ek: 'E' } }));
+    const probe = (from) => post3(JSON.stringify({ from, dh: 'd', ct: Buffer.from('probe' + (k++)).toString('base64'), n: 0, x3dh: { ik: 'WRONG', ek: 'E' } }));
     const contact = await probe(FRIEND), blocked = await probe(BLOCKED), stranger = await probe(OTHER);
     ok('while proof of work is asked for, claiming a contact (with the wrong key) gets the same answer as a stranger', contact === 402 && stranger === 402, contact + ' / ' + stranger);
     ok('…and so does claiming a blocked address', blocked === 402, blocked);

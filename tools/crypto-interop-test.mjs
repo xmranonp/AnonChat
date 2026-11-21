@@ -92,8 +92,10 @@ await throws('tampered header (n) → decrypt fails', () => ratchetDecrypt(S.bob
 
 console.log('\n6. Skipped-message bound (MAX_SKIP)');
 S = await establish({ withOPK: true });
-let jump; for (let i = 0; i < 300; i++) jump = await ratchetEncrypt(S.alice, encPT('m' + i));
-await throws('gap > MAX_SKIP(256) is rejected', () => ratchetDecrypt(S.bob, jump.header, jump.ct));
+// 1.0.11: 2,000 (256 before); a message further ahead is refused here and parked by the window (tools/identity-pin-test.mjs, part 15)
+const all = []; for (let i = 0; i < 2002; i++) all.push(await ratchetEncrypt(S.alice, encPT('m' + i)));
+await throws('gap > MAX_SKIP(2000) is rejected', () => ratchetDecrypt(S.bob, all[2001].header, all[2001].ct));
+ok('a gap of exactly 2,000 is read', text.fromBytes(await ratchetDecrypt(S.bob, all[2000].header, all[2000].ct)) === 'm2000');
 
 console.log('\n7. No one-time prekey (3-DH fallback)');
 S = await establish({ withOPK: false });

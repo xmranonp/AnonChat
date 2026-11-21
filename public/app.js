@@ -3541,8 +3541,16 @@ async function _processEnvelopeInner(env) {
     await handleInbound(env);
     markProcessed(env.id);
     _inboundFails.delete(env.id);
+    if (_parkedFrom.has(env.from)) retryParkedSoon(env.from);          // something new from them: what was parked may be readable now
     return true;
   } catch (e) {
+    // Far ahead of what we have read from them (more than the ratchet's skip limit): parked, not a failure. It is read once the earlier
+    // messages are in (1.0.11). No toast and no new session: nothing is wrong, the earlier ones are only late.
+    if (/too many skipped messages/.test((e && e.message) || '') && keyHolder(env.from) && await parkEnvelope(env.id)) {
+      _inboundFails.delete(env.id);
+      _parkedFrom.add(env.from);
+      return 'parked';
+    }
     // Wrong identity key for a known contact: an impostor. Retrying can't change that, so drop it now and say what happened.
     if (e && e.code === 'IK_MISMATCH') {
       markProcessed(env.id);
@@ -3573,6 +3581,56 @@ async function _processEnvelopeInner(env) {
   }
 }
 const MAX_INBOUND_RETRIES = 5;
+
+// Parked messages (1.0.11; the backend keeps them, lib/store.js park). A message is parked when it is too far ahead of the last one read
+// from that sender; whenever something new from them is read, their parked messages that are within reach now are tried again, oldest
+// first. Parked messages never hold up newer ones, and are dropped by the backend after 7 days.
+const _parkedFrom = new Set();          // senders with parked messages (as far as this window knows)
+const _parkRetry = new Map();           // sender -> 'running' | 'again'
+async function parkEnvelope(id) {
+  try {
+    const r = await fetch('/api/messages/park', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id] }) });
+    if (!r.ok) return false;
+    const j = await r.json();
+    return Array.isArray(j.parked) && j.parked.includes(id);
+  } catch { return false; }
+}
+// Could the session read this parked message now? (the same test the ratchet makes, without its work)
+function parkedInReach(s, env) {
+  if (!s) return true;
+  const n = Number(env.n) || 0, pn = Number(env.pn) || 0;
+  if (env.dh === s.DHr) return n - (s.Nr || 0) <= Ratchet.MAX_SKIP;
+  return pn - (s.Nr || 0) <= Ratchet.MAX_SKIP && n <= Ratchet.MAX_SKIP;
+}
+function retryParkedSoon(from) {
+  if (_parkRetry.has(from)) { _parkRetry.set(from, 'again'); return; }
+  _parkRetry.set(from, 'running');
+  setTimeout(() => { retryParked(from).catch(() => {}).finally(() => _parkRetry.delete(from)); }, 0);
+}
+async function retryParked(from) {
+  for (let round = 0; round < 20; round++) {
+    _parkRetry.set(from, 'running');
+    let list = [];
+    try { const r = await fetch('/api/messages/parked?from=' + encodeURIComponent(from)); if (r.ok) list = await r.json(); } catch {}
+    if (!Array.isArray(list) || !list.length) { _parkedFrom.delete(from); return; }
+    const ack = [];
+    for (const env of list) {
+      if (!parkedInReach(loadSession(from), env)) continue;
+      if ((await processEnvelope(env)) === true) ack.push(env.id);
+    }
+    await ackEnvelopes(ack);
+    if (_parkRetry.get(from) !== 'again') return;
+  }
+}
+// At start: who has parked messages (kept by the backend across restarts).
+async function loadParkedSenders() {
+  try {
+    const r = await fetch('/api/messages/parked');
+    if (!r.ok) return;
+    const j = await r.json();
+    for (const a of Object.keys((j && j.senders) || {})) { _parkedFrom.add(a); retryParkedSoon(a); }
+  } catch {}
+}
 // A new session for someone, at most every 10 minutes each: our next message carries a fresh handshake. Sent as a silent 'accept' (for a
 // group member who isn't a contact, tagged with a group we share, so their app doesn't take it for a message request).
 const _sessionOffers = new Map();
@@ -3733,7 +3791,7 @@ function connectWS() {
 
     if (msg.type !== 'inbox' || !msg.envelope) return;
     const ok = await processEnvelope(msg.envelope);
-    if (ok) await ackEnvelopes([msg.envelope.id]);
+    if (ok === true) await ackEnvelopes([msg.envelope.id]);          // 'parked': kept by the backend, not acked
     try { document.dispatchEvent(new CustomEvent('anon:traffic')); } catch {}
     await loadContacts();
     if (selected) renderConversation();
@@ -3750,7 +3808,7 @@ async function poll() {
       const ack = [];
       for (const env of inbox) {
         const ok = await processEnvelope(env);
-        if (ok) ack.push(env.id);
+        if (ok === true) ack.push(env.id);          // 'parked': kept by the backend, not acked
       }
       await ackEnvelopes(ack);
       if (r.headers.get('X-More') !== '1' || !ack.length) break;
@@ -6102,6 +6160,7 @@ async function init() {
     toast(t('enc.corrupt', { n: _corruptStateCount }), 8000);
   }
   poll();
+  loadParkedSenders();          // messages parked in an earlier run (1.0.11)
   setInterval(poll, 20000);
   setInterval(refreshWhoami, 15000);
   setInterval(ensurePrekeys, 60000);

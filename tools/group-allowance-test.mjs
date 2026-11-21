@@ -25,7 +25,7 @@ for (let i = 0; i < 200; i++) { try { const r = await fetch('http://127.0.0.1:61
 const ui = (p, m = 'GET', body) => fetch('http://127.0.0.1:6101' + p, { method: m, headers: { 'X-AnonChat-Token': TOKEN, 'Content-Type': 'application/json', Host: '127.0.0.1:6101' }, body: body ? JSON.stringify(body) : undefined }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
 let n = 0;
 async function drop(from) {
-  const ct = 'ct' + (++n) + '-' + Math.random();
+  const ct = Buffer.from('ct' + (++n) + '-' + Math.random()).toString('base64');
   const ch = (await pubReq('/api/pow-challenge', 'GET')).body;
   const nonce = pow.solve({ challenge: ch.challenge, from, ct, bits: ch.bits });
   const env = { id: 'id' + n + Math.random(), from, ct, dh: 'x', n: 0, pn: 0, pow: { c: ch.challenge, n: nonce } };

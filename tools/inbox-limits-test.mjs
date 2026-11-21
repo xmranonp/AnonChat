@@ -38,7 +38,7 @@ const pubPost = (env, extra = {}) => new Promise((res, rej) => {
 const ui = (p, m = 'GET', body) => fetch('http://127.0.0.1:6201' + p, { method: m, headers: { 'X-AnonChat-Token': TOKEN, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
 let n = 0;
 const env = (from, ct) => {
-  const e = { id: 'x', from, ct: ct || ('ct-' + (++n) + '-' + Math.random()), dh: 'x', n: 0, pn: 0 };
+  const e = { id: 'x', from, ct: ct || (Buffer.from('ct-' + (++n) + '-' + Math.random()).toString('base64')), dh: 'x', n: 0, pn: 0 };
   if (from === FRIEND) e.stamp = stamp.make(K_FRIEND, e, from, ME);       // the contact's own app stamps its messages
   return e;
 };

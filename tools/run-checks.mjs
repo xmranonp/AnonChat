@@ -423,5 +423,19 @@ try {
   (m && m[2] === '0') ? pass(`restart ${m[1]}/${m[1]}`) : fail('restart: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('restart — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n50. Copies of a message are recognised for 9 days, across a restart; non-canonical base64 is refused (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/dupes-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`copies ${m[1]}/${m[1]}`) : fail('copies: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('copies — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n51. Parked messages: kept apart, outside every allowance, at most 2,000 per sender, 7 days, across a restart; the endpoints (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/parked-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`parked ${m[1]}/${m[1]}`) : fail('parked: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('parked — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

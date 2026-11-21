@@ -37,7 +37,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let n = 0;
 const big0 = 600 * 1024;
 const env = (from, { key, to = ME, size } = {}) => {
-  const e = { from, ct: (size ? 'x'.repeat(size) : 'ct') + '-' + (++n) + '-' + Math.random(), dh: 'dh', n: 0, pn: 0 };
+  const e = { from, ct: size ? Buffer.from(String(++n).padStart(12, '0')).toString('base64') + 'x'.repeat(Math.ceil((size - 16) / 4) * 4) : Buffer.from('ct-' + (++n) + '-' + Math.random()).toString('base64'), dh: 'dh', n: 0, pn: 0 };
   if (key) e.stamp = stamp.make(key, e, from, to);
   return e;
 };

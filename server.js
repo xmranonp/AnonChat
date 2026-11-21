@@ -85,10 +85,13 @@ function isValidAddr(addr) {
 const MAX_DH_LEN  = 512;            // base64 P-256 pubkey is ~88 chars
 const MAX_CT_LEN  = 8 * 1024 * 1024;
 const MAX_OPK_LEN = 128;
+const canonicalB64 = (s) => /^[A-Za-z0-9+/]*={0,2}$/.test(s) && s.length % 4 === 0 && Buffer.from(s, 'base64').toString('base64') === s;
 function validEnvelope(env) {
   if (typeof env.from !== 'string' || !env.from) return false;
   if (typeof env.dh   !== 'string' || env.dh.length === 0 || env.dh.length > MAX_DH_LEN) return false;
   if (typeof env.ct   !== 'string' || env.ct.length === 0 || env.ct.length > MAX_CT_LEN) return false;
+  // Canonical base64 only (what every app writes): the same bytes spelled another way would slip past the check for copies.
+  if (!canonicalB64(env.ct)) return false;
   if (!Number.isInteger(env.n) || env.n < 0) return false;
   if (env.pn != null && (!Number.isInteger(env.pn) || env.pn < 0)) return false;
   if (env.x3dh != null) {
@@ -438,10 +441,10 @@ pub.post('/api/inbox', (req, res) => {
   // Reject malformed from-addresses. The ratchet is the real authentication, so this is only an input check.
   if (!isValidAddr(cleanAddr(env.from))) return res.status(400).json({ error: 'bad from-address' });
 
-  // Replay check: ciphertexts seen in the last 24 h are not stored again (in-memory, cleared on restart; the ratchet's consumed-key set is
-  // the persistent guard). F-4: answered 200 like every other outcome below, so a repeat can't tell a stored message from a dropped one
-  // (and with it who our contacts are, or whom we blocked). Senders treat 200 and an older peer's 409 alike: delivered.
-  if (store.hasSeenEnvelope(env.ct)) return res.json({ ok: true });
+  // Copies: a message from this sender with this ciphertext received in the last 9 days, across restarts (lib/dupes.js), is not stored
+  // again. F-4: answered 200 like every other outcome below, so a repeat can't tell a stored message from a dropped one (and with it who
+  // our contacts are, or whom we blocked). Senders treat 200 and an older peer's 409 alike: delivered.
+  if (store.hasSeenEnvelope(cleanAddr(env.from), env.ct)) return res.json({ ok: true });
 
   // The connection's own address. X-Forwarded-For is written by the sender and is never trusted: rotating it used to dodge the limit.
   // Everything through the Anyone network arrives from the local proxy, so for non-contacts this limit is shared by all of them.
@@ -540,7 +543,7 @@ pub.post('/api/inbox', (req, res) => {
   }
 
   // Recorded only now that it is accepted (see store.seenEnvelope); still checked, as two copies may have raced through the checks above.
-  if (store.seenEnvelope(env.ct)) return res.json({ ok: true });
+  if (store.seenEnvelope(from, env.ct)) return res.json({ ok: true });
   const stored = store.addToInbox({
     id: crypto.randomUUID(),
     from,
@@ -1151,6 +1154,21 @@ ui.post('/api/messages/ack', (req, res) => {
   if (ids.length) store.deleteFromInbox(ids);
   res.json({ ok: true });
 });
+// Parked messages (1.0.11, lib/store.js park): the window parks one it can't read yet because it is too far ahead of earlier ones, and
+// asks for a sender's parked messages again once it has read something new from them.
+ui.post('/api/messages/park', (req, res) => {
+  const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).filter((x) => typeof x === 'string').slice(0, 500);
+  res.json({ parked: ids.length ? store.park(ids) : [] });
+});
+ui.get('/api/messages/parked', (req, res) => {
+  const from = typeof req.query.from === 'string' ? cleanAddr(req.query.from) : '';
+  if (!from) return res.json(store.getParked(null));
+  if (!isValidAddr(from)) return res.status(400).json({ error: 'bad address' });
+  const { items, more } = store.getParked(from, { maxBytes: 32 * 1024 * 1024 });
+  if (more) res.set('X-More', '1');
+  res.json(items);
+});
+setInterval(() => { try { store.sweepParked(); } catch {} }, 60 * 60 * 1000).unref();
 
 const outbox = require('./lib/outbox');
 const deliveryLog = deliverylog.create();

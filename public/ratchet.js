@@ -34,7 +34,12 @@ export async function verifySPK(sigPubB64, spkPubB64, sigB64) {
   }
 }
 
-const MAX_SKIP = 256;
+// How far ahead of the last message read a message may be and still be read (1.0.11: 2,000; 256 before). Messages can arrive far out of
+// order once copies come by more than one way (mailbox peers, a direct try that was slow). One further ahead is parked by the window and
+// read once the earlier ones are in. The keys of messages skipped over are kept (at most MAX_STORED) until those messages come; the
+// positions already read are remembered (at most MAX_USED) so a copy is never read twice.
+export const MAX_SKIP = 2000;
+const MAX_STORED = 2000, MAX_USED = 4000;
 
 const ZERO32 = new Uint8Array(32);
 const enc = new TextEncoder();
@@ -173,7 +178,7 @@ async function skipMessageKeys(s, until) {
   }
   // Cap the skipped store so it can't grow without bound.
   const keys = Object.keys(s.skipped);
-  if (keys.length > MAX_SKIP) for (const k of keys.slice(0, keys.length - MAX_SKIP)) delete s.skipped[k];
+  if (keys.length > MAX_STORED) for (const k of keys.slice(0, keys.length - MAX_STORED)) delete s.skipped[k];
 }
 
 export async function ratchetEncrypt(s, plaintext) {
@@ -203,7 +208,7 @@ export async function ratchetDecrypt(s, header, ct) {
     s.consumed[consumedKey] = 1;
     // Prune consumed set so it doesn't grow unboundedly.
     const ckeys = Object.keys(s.consumed);
-    if (ckeys.length > MAX_SKIP) for (const k of ckeys.slice(0, ckeys.length - MAX_SKIP)) delete s.consumed[k];
+    if (ckeys.length > MAX_USED) for (const k of ckeys.slice(0, ckeys.length - MAX_USED)) delete s.consumed[k];
     s.confirmed = true;
     return pt;
   }
@@ -221,7 +226,7 @@ export async function ratchetDecrypt(s, header, ct) {
   const pt = await decryptMK(mk, ct, aad);
   s.consumed[consumedKey] = 1;
   const ckeys2 = Object.keys(s.consumed);
-  if (ckeys2.length > MAX_SKIP) for (const k of ckeys2.slice(0, ckeys2.length - MAX_SKIP)) delete s.consumed[k];
+  if (ckeys2.length > MAX_USED) for (const k of ckeys2.slice(0, ckeys2.length - MAX_USED)) delete s.consumed[k];
   s.confirmed = true;
   return pt;
 }
