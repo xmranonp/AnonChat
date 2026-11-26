@@ -288,8 +288,12 @@ const PRESENCE_FRESH_MS    = envMs('PRESENCE_FRESH_MS', 2 * 60 * 1000);
 let otherOkMono = null;          // when another address was last reached (lib/selftest.js: is the fault ours?)
 function markSeen(address) {
   if (address !== myAddress()) otherOkMono = monoNow();
-  presence.set(address, { online: true, lastSeen: Date.now(), fails: 0 });
+  const was = presence.get(address);
+  const cameOnline = !(was && was.online);
+  // since: when they came online (the mailbox sending measures "online for 30 s and nothing collected" from it, design section 11)
+  presence.set(address, { online: true, lastSeen: Date.now(), fails: 0, since: cameOnline ? Date.now() : (was.since || Date.now()) });
   stale.noteOk(address);
+  if (cameOnline && swarm) swarm.cameOnline(address);
 }
 const _rechecks = new Set();
 let wakeEpoch = 0;                  // goes up at each wake from sleep: a check that began before it says nothing about the contact
@@ -304,7 +308,7 @@ async function checkPresence(address) {
     const p = presence.get(address) || { online: null, lastSeen: null, fails: 0 };
     if (Date.now() - (p.lastSeen || 0) < PRESENCE_FRESH_MS) return;          // reached meanwhile by a message: that wins
     const fails = (p.fails || 0) + 1;
-    presence.set(address, { online: fails >= 2 ? false : p.online, lastSeen: p.lastSeen, fails });
+    presence.set(address, { online: fails >= 2 ? false : p.online, lastSeen: p.lastSeen, fails, ...(fails >= 2 ? {} : { since: p.since }) });
     if (fails === 1 && !_rechecks.has(address)) {
       _rechecks.add(address);
       setTimeout(() => { _rechecks.delete(address); if (store.getContacts().some((c) => c.address === address)) checkPresence(address); }, PRESENCE_RECHECK_MS);
@@ -377,7 +381,8 @@ pub.get('/api/profile', (_req, res) => {
   if (!id) return res.status(503).json({ error: 'identity not initialised yet' });
   // The current signed prekey too (it is public, as at /api/identity, but this hands out no one-time key): the window replaces it every
   // week, and contacts learn the new one here when they next refresh our profile.
-  res.json({ name: id.name || null, avatar: id.avatar || null, bio: id.bio || null, ratchetPub: id.ratchetPub || null, spkSig: id.spkSig || null });
+  // swarm: 1, this app reads contacts' mailbox details (design section 7); nothing else about mailboxes is said here.
+  res.json({ name: id.name || null, avatar: id.avatar || null, bio: id.bio || null, ratchetPub: id.ratchetPub || null, spkSig: id.spkSig || null, swarm: 1 });
 });
 
 // Anyone can send this notice, claiming any address, so it is limited. Only a notice that claims one of our contacts or group members
@@ -581,6 +586,42 @@ pub.post('/api/inbox', (req, res) => {
   }
   res.json({ ok: true });
 });
+
+// A message collected from one of our mailbox peers (lib/swarm/collect.js): the same checks as /api/inbox, without the rate limits and
+// proof of work (the peer took it under the sender's token, and only contacts have one). Returns the ack (design section 10):
+//   'stored'    stored, or a copy we already have
+//   'discarded' blocked, invalid, not from a contact, bad stamp, a handshake with the wrong identity key (the sender then sends directly)
+//   'later'     no stamp key yet, the inbox full: not acked, tried again later
+// A collected message doesn't mark the sender online; one that reached the peer less than a minute ago triggers one online check.
+function acceptMailboxEnvelope(env, { writtenAt } = {}) {
+  if (!env || typeof env !== 'object' || !validEnvelope(env)) return 'discarded';
+  const from = cleanAddr(env.from);
+  if (!isValidAddr(from) || from === myAddress()) return 'discarded';
+  if (store.hasSeenEnvelope(from, env.ct)) return 'stored';
+  const contact = store.getContacts().find((c) => c.address === from);
+  if (!contact || store.isBlocked(from)) return 'discarded';
+  const mkey = store.stampKey(from);
+  if (!mkey) { askWindowForKey(from); return 'later'; }
+  if (!stamp.check(mkey, env, from, myAddress())) return 'discarded';
+  if (env.x3dh && contact.ecdhPub && env.x3dh.ik !== contact.ecdhPub) { store.incrementBlocked(); return 'discarded'; }
+  const size = Buffer.byteLength(env.ct) + Buffer.byteLength(env.dh) + 256;
+  const exempt = new Set(store.getContacts().map((c) => c.address)); for (const a of store.groupMemberSet()) exempt.add(a);
+  const u = store.inboxUsage(exempt, from, {});
+  if (u.totalCount >= LIMITS.totalCount || u.totalBytes + size > LIMITS.totalBytes || u.fromBytes + size > LIMITS.contactBytes) return 'later';
+  if (store.seenEnvelope(from, env.ct)) return 'stored';
+  const at = Number.isFinite(writtenAt) && writtenAt > 0 && writtenAt <= Date.now() + 60000 ? Math.min(writtenAt, Date.now()) : Date.now();
+  const stored = store.addToInbox({
+    id: crypto.randomUUID(), from, dh: env.dh, pn: Number.isInteger(env.pn) ? env.pn : 0, n: env.n, ct: env.ct,
+    x3dh: env.x3dh ? { ik: env.x3dh.ik, ek: env.x3dh.ek, opkId: env.x3dh.opkId || null } : null,
+    // receivedAt is when we took it (the inbox's order and the parked messages' 7 days go by it); writtenAt, when it reached the peer, is
+    // the peer's word and only shown
+    receivedAt: Date.now(), writtenAt: at, src: 'mailbox',
+  }, { force: true });
+  broadcastEnvelope(stored);
+  maybeRefreshProfile(from);
+  if (Date.now() - at < 60000) setImmediate(() => checkPresence(from).catch?.(() => {}));
+  return 'stored';
+}
 
 // UI access check. A DNS-rebinding page arrives with its own Host name, and any other local program or browser tab has no token.
 // The desktop app creates a random token at each launch and adds it as a header to every request its window makes; the page itself never sees it.
@@ -1080,6 +1121,7 @@ ui.delete('/api/contacts', (req, res) => {
     // group messages to them wait in the same queue and can't be told apart from the outside (the window says so). Groups an admin
     // removed us from don't count: nothing is sent there any more.
     if (!store.activeGroupMemberSet().has(address)) dropped = outbox.removeFor(address);
+    if (swarm) swarm.removeContact(address);          // their mailbox details and what waited at their peers for us to check
     stale.noteGone(address);
   }
   res.json({ ok: true, dropped });
@@ -1097,6 +1139,7 @@ ui.post('/api/stamp-keys', (req, res) => {
     clean.push({ address, key: k.key });
   }
   store.setStampKeys(clean, { replace: req.body.replace === true });
+  if (swarm) { swarm.stampKeysArrived(); swarm.contactsChanged(); }          // collected messages waiting for a key; tokens for new contacts
   res.json({ ok: true, count: clean.length });
 });
 
@@ -1234,7 +1277,7 @@ const netready = netreadyLib.create({
     console.log(`[network] ready (${why})`);
     deliveryLog.note('the network is ready; sending what waits');
     forgetOnionLookups(true);
-    setTimeout(() => outbox.kick(), 1500);
+    setTimeout(() => { outbox.kick(); if (swarm) swarm.kick(); }, 1500);
     setTimeout(() => presenceSweep().catch(() => {}), 5000);
   },
 });
@@ -1380,19 +1423,46 @@ async function announceBack() {
   }
 }
 
+// Mailbox sending (lib/swarm): to contacts whose details list mailbox peers. Its endpoints are under /api/swarm.
+const swarmRouter = express.Router();
+let swarm = null;
+ui.use('/api/swarm', (req, res, next) => (swarm ? swarmRouter(req, res, next) : res.status(503).json({ error: 'not ready' })));
+function broadcastUi(msg) { const j = JSON.stringify(msg); for (const ws of wsClients) try { ws.send(j); } catch {} }
+function initSwarm() {
+  swarm = require('./lib/swarm/backend').create({
+    dataDir: DATA_DIR, outbox, socksUrl: SOCKS, broadcast: broadcastUi, ready: () => isNetReady(),
+    hsFetch: (addr) => refreshPeerDescriptor(addr),
+    isContact: (a) => store.getContacts().some((c) => c.address === a),
+    listContacts: () => store.getContacts().map((c) => c.address),
+    accept: (env, o) => acceptMailboxEnvelope(env, o),
+    joinAllowed: process.env.ANONCHAT_SWARM_TEST === '1',          // joining a peer: test builds only, for now
+    payloadFor: (qid) => { const i = outbox.get(qid); if (!i) return null; const from = myAddress(); return { ...restampQueued(i.envelope, from, i.toAddress), from }; },
+    presence: {
+      recent: (a, ms) => { const p = presence.get(a); return !!(p && p.online && Date.now() - (p.lastSeen || 0) < ms); },
+      check: async (a) => { await checkPresence(a); const p = presence.get(a); return !!(p && p.online && Date.now() - (p.lastSeen || 0) < 15000); },
+      onlineSince: (a) => { const p = presence.get(a); return p && p.online ? p.since || null : null; },
+      mobile: () => false,          // phones come with the Android app
+    },
+    log: (m) => { console.log(m); },
+  });
+  swarm.routes(swarmRouter);
+  swarm.start();
+}
+
 function initOutbox() {
   announceBack().catch(() => {});
   outbox.on('delivered', (item) => {
-    if (store.getContacts().some((c) => c.address === item.toAddress)) markSeen(item.toAddress);
+    // Collected from their mailbox says nothing about whether their app is reachable now.
+    if (item.via !== 'mailbox' && store.getContacts().some((c) => c.address === item.toAddress)) markSeen(item.toAddress);
     const msg = { type: 'outbox:delivered', id: item.id, msgId: item.msgId || null, toAddress: item.toAddress, queuedAt: item.queuedAt };
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
   });
   // Why messages to someone are waiting, in the Status log (lib/deliverylog.js).
   outbox.on('tryFailed', ({ toAddress, error }) => deliveryLog.failed(toAddress, error));
-  outbox.on('delivered', (item) => { deliveryLog.delivered(item.toAddress); stale.noteOk(item.toAddress); });
+  outbox.on('delivered', (item) => { if (item.via === 'mailbox') return; deliveryLog.delivered(item.toAddress); stale.noteOk(item.toAddress); });
   outbox.on('expired', (item) => {
     if (!outbox.queue.some((i) => i.toAddress === item.toAddress)) stale.noteGone(item.toAddress);          // nothing left for them
-    const msg = { type: 'outbox:expired', id: item.id, msgId: item.msgId || null, toAddress: item.toAddress };
+    const msg = { type: 'outbox:expired', id: item.id, msgId: item.msgId || null, toAddress: item.toAddress, ...(item.outcome ? { outcome: item.outcome } : {}) };
     for (const ws of wsClients) try { ws.send(JSON.stringify(msg)); } catch {}
   });
   // After the listeners: messages that ran out of time while the app was closed are reported too.
@@ -1407,10 +1477,15 @@ function initOutbox() {
       if (epoch !== wakeEpoch || !isNetReady()) return;          // the try began before a sleep, or the network isn't ready: not their fault, and no fetch (it would be remembered for 15 minutes)
       refreshPeerDescriptor(addr, stale.noteFail(addr));
     } });
+  initSwarm();
 }
 
 ui.post('/api/send', async (req, res) => {
-  let { toAddress, envelope, msgId, offlineTtl, ephemeral } = req.body || {};
+  let { toAddress, envelope, msgId, offlineTtl, ephemeral, route, ttlChosen } = req.body || {};
+  // route (1.1.0): swarm-ok (may go to their mailbox), direct+copy (call invite and cancel: directly, and a copy for the missed-call
+  // record), direct-only. class: text or media. Anything else is direct-only, as before.
+  route = ['swarm-ok', 'direct+copy', 'direct-only'].includes(route) ? route : 'direct-only';
+  const cls = req.body?.class === 'media' ? 'media' : 'text';
   if (!toAddress || !envelope) return res.status(400).json({ error: 'toAddress and envelope required' });
   const addr = cleanAddr(toAddress);
   if (!isValidAddr(addr)) return res.status(400).json({ error: 'invalid .anyone address' });
@@ -1426,6 +1501,23 @@ ui.post('/api/send', async (req, res) => {
   // from there (lib/outbox.js deliverNow), a few times on a fresh circuit when the network fails, each message on its own. When older
   // messages to the same recipient are already waiting in the queue, it goes behind them in the background instead.
   // Leaving or dissolving a group (queueOnly): queued and sent in the background, so the window never waits on an offline member.
+  if (ephemeral !== true && swarm && route === 'swarm-ok' && req.body.queueOnly !== true) {
+    const plan = await swarm.plan({ to: addr, cls, route, ttlS: ttlMs ? ttlMs / 1000 : null, ttlChosen: ttlChosen === true });
+    if (plan.mode !== 'direct') {
+      // Into their mailbox (held: never tried directly), or directly first with the mailbox behind it. Same expiry for both.
+      const qid = outbox.enqueue(addr, envelope, from, plan.expiry * 1000 - Date.now(), typeof msgId === 'string' ? msgId : null, { held: plan.held, owned: true });
+      swarm.track({ qid, to: addr, msgId: typeof msgId === 'string' ? msgId : null, cls, mode: plan.mode, expiry: plan.expiry });
+      if (plan.held) return res.json({ ok: true, queued: true, queueId: qid, mailbox: true });
+      const r = await outbox.deliverNow(qid);
+      if (r === 'delivered') return res.json({ ok: true, queued: false });
+      if (r === 'queued' && plan.mode === 'direct-first') swarm.directFailed(qid);
+      if (r === 'failed') return res.status(502).json({ error: 'delivery failed' });
+      return res.json({ ok: true, queued: true, queueId: qid, mailbox: true });
+    }
+  }
+  // A call invite or cancel to a contact with a mailbox: a copy goes to their peers only when it can't reach them directly (a missed-call
+  // record for later). Never before: a copy collected first would make the direct one a duplicate, and the call wouldn't ring.
+  const copyIfUnreached = (ephemeral === true && route === 'direct+copy' && swarm && swarm.hasMailbox(addr)) ? () => swarm.copy({ to: addr, payload }) : () => {};
   if (ephemeral !== true) {
     const qid = outbox.enqueue(addr, envelope, from, ttlMs, typeof msgId === 'string' ? msgId : null);
     if (req.body.queueOnly === true) {
@@ -1440,7 +1532,7 @@ ui.post('/api/send', async (req, res) => {
 
   // Call signalling is time-critical and worthless later: two attempts at most, never queued. Not while the network isn't ready (just
   // after a start or a wake): the lookups would fail and be remembered for 15 minutes, and the window can say why at once.
-  if (!isNetReady()) return res.status(503).json({ error: 'network_not_ready' });
+  if (!isNetReady()) { copyIfUnreached(); return res.status(503).json({ error: 'network_not_ready' }); }
   const TRANSIENT = /HostUnreachable|Hs[A-Z]\w+|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|socket hang up|Proxy connection timed out|proxy.*timed out|timed out|timeout|ESOCKETTIMEDOUT|Network Error|connect ENETUNREACH/i;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
@@ -1459,6 +1551,7 @@ ui.post('/api/send', async (req, res) => {
           return res.json({ ok: true, queued: false, pow: true });
         } catch (err2) {
           if (err2.response?.status === 409) return res.json({ ok: true, queued: false, pow: true });
+          copyIfUnreached();
           return res.status(502).json({ error: 'unreachable' });
         }
       }
@@ -1467,9 +1560,11 @@ ui.post('/api/send', async (req, res) => {
         await new Promise(r => setTimeout(r, 2500));
         continue;
       }
+      copyIfUnreached();
       return res.status(502).json({ error: 'unreachable' });
     }
   }
+  copyIfUnreached();
   return res.status(502).json({ error: 'unreachable' });
 });
 
@@ -1548,8 +1643,11 @@ ui.post('/api/restore', (req, res) => {
     const patch = {};
     for (const k of ['acceptRequests', 'powAlways', 'readReceipts']) if (typeof s[k] === 'boolean') patch[k] = s[k];
     if (Object.keys(patch).length) store.setSettings(patch);
-    console.log(`[restore] identity restored: ${nContacts} contact(s), ${groups.length} group(s); restart to publish the address`);
-    res.json({ ok: true, address: hostname, contacts: nContacts, groups: groups.length });
+    // The mailbox (1.1.0): our peers, keys and tokens, and contacts' details. A backup from a newer app's mailbox format is left out
+    // (said in the answer); the rest of the restore goes ahead.
+    const sw = swarm ? (b.swarm ? swarm.restore(b.swarm) : (swarm.restore(null), null)) : null;
+    console.log(`[restore] identity restored: ${nContacts} contact(s), ${groups.length} group(s)${sw ? `, ${sw.restored} mailbox peer(s)` : ''}; restart to publish the address`);
+    res.json({ ok: true, address: hostname, contacts: nContacts, groups: groups.length, ...(sw ? { mailboxes: sw.restored, ...(sw.error ? { mailboxError: sw.error } : {}) } : {}) });
   } catch (e) {
     console.error('[restore] failed:', e.message);
     res.status(500).json({ error: 'failed' });

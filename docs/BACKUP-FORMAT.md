@@ -77,6 +77,46 @@ install generates fresh ones.
 backup of many people could grow past what a restore takes). Your own picture (`profile`) and group pictures stay. `groups`, `blocked`, `settings` (only the three fields above), `profile` and `prefs` (pinned chats, verified safety numbers, disappearing-message timers)
 are restored as they are; unknown fields should be ignored.
 
+### Mailbox (`swarm`, optional, from 1.1.0)
+
+Present only when the install uses mailbox peers or has contacts' mailbox details. Versioned inside: a reader that sees a `v` greater
+than it knows restores everything else and says the mailbox part comes from a newer version (the person joins their peers again).
+
+```json
+"swarm": {
+  "v": 1, "at": 1795400000000, "seq": 1795400000000, "keepFor": 604800,
+  "capable": [ "<contact address>", ... ],
+  "peers": [ {
+    "address": "<peer>.anyone", "state": "active",
+    "mailbox": "<32 hex>", "secret": "<base64url, 32 bytes: the owner secret>",
+    "key":    { "kid": "<16 hex>", "pk": "<base64url, 65-byte P-256 point>", "sk": "<base64url, 32 bytes>" },
+    "oldKey": { "kid": "...", "pk": "...", "sk": "...", "until": 1795400000000 },
+    "tokens": { "<contact address>": "<base64url, 32 bytes>", ... },
+    "retiring": [ { "h": "<64 hex: SHA-256 of a token replaced by a key rotation>", "until": 1795400000000 } ]
+  } ],
+  "contacts": { "<contact address>": { "v": 1, "seq": ..., "keepFor": ..., "peers": [ ... ] } }
+}
+```
+
+- `at`: when the backup was made (to tell, after a restore, whether another install used the mailbox since).
+- `peers`: each mailbox peer, at most 4 (a peer still being joined has `state: "joining"` and its `invite` instead of `mailbox`; a peer
+  being left has `state: "leaving"`, no secret keys, and is told again after the restore). `kid` must be the one `pk` gives at that
+  address, `pk` a point on the curve and `sk` its secret key (design section 6); a peer that fails any check, or repeats an address, is
+  left out. `tokens` are the drop tokens each contact holds (registered or not yet); the peer only knows their SHA-256. Times in the
+  future are kept at most 8 days ahead.
+- `contacts`: the latest mailbox details each contact sent us, checked as if they had just arrived.
+- `capable`: contacts whose apps read mailbox details.
+- After the restart, the app asks each peer whether the mailbox still exists (one that doesn't is removed, and the person is told) and
+  whether another install used it since the backup (its keys, or a collection after `at`: the person is warned and that install's keys
+  stay accepted 8 days); then it registers the backup's tokens again (added, in requests of at most 1,000, so tokens another install
+  made since are left alone) and sends every capable contact fresh details naming that peer. A peer that doesn't answer is asked again
+  every minute; the others don't wait for it, and contacts get nothing until at least one peer is checked. Tokens stay the same, so
+  contacts' copies of the old details keep working meanwhile.
+- A restore without this field (or with a newer `v`) sets `seq`, so contacts who still hold mailbox details from before are told
+  "write to me directly" once they show they read details.
+
+These are secrets: with them anyone can collect the mailbox. They are only ever written inside the encrypted payload.
+
 ## Restoring
 
 1. Before anything is erased or written, a reader checks the payload's shape **and** that every identity key pair belongs together

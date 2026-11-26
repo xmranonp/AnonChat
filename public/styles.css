@@ -1741,6 +1741,9 @@ label.grp-member-row {
   50%       { opacity: 0.35; }
 }
 .receipt-tick.failed { color: var(--err); }
+.receipt-tick.mailbox { font-size: 11px; }
+.send-again { background: none; border: 0; padding: 0; font: inherit; font-size: 10px; color: var(--signal); cursor: pointer; text-decoration: underline; }
+.send-again:hover { color: var(--text); }
 
 
 .grp-head-btns { display: flex; gap: 6px; align-items: center; }
@@ -2414,3 +2417,16 @@ input:focus-visible, textarea:focus-visible, select:focus-visible { outline: non
 .upd-win-note strong { color: var(--text); }
 .upd-dialog .confirm-ok { background: var(--signal); border-color: var(--signal); color: var(--on-signal); font-weight: 600; }
 .upd-dialog .confirm-ok:hover { filter: brightness(1.08); background: var(--signal); }
+
+/* Settings → Mailbox swarm (1.1.0 test builds) */
+.swarm-join { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.swarm-join input { width: 100%; box-sizing: border-box; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--border, #444); background: var(--bg2, transparent); color: inherit; font: inherit; font-size: 12px; font-family: ui-monospace, monospace; }
+.swarm-join .set-pill { align-self: flex-start; }
+
+/* Report an issue (1.1.0) */
+.report-warn { opacity: .8; font-size: 12px; }
+.report-details { word-break: normal; overflow-wrap: anywhere; }
+.swarm-peer-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.swarm-switch { margin: 4px 0 12px; padding-left: 12px; border-left: 2px solid var(--border, #444); }
+.swarm-peer { margin-top: 10px; }
+.swarm-problem { margin: 8px 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--err, #c55); font-size: 12px; line-height: 1.45; }

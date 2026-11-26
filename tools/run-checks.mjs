@@ -444,5 +444,54 @@ try {
   (m && m[2] === '0') ? pass(`online check ${m[1]}/${m[1]}`) : fail('online check: ' + (m ? m[0] : 'no summary'));
 } catch (e) { fail('online check — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
 
+console.log('\n53. Mailbox drops: the seal against RFC 9180, swarm-vectors.json, a second implementation both ways, and the failure cases (the release gate)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/swarm-seal-test.mjs')], { stdio: 'pipe', timeout: 60000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`swarm seal ${m[1]}/${m[1]}`) : fail('swarm seal: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('swarm seal — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n54. Talking to a mailbox peer: isolated routes, deadlines, cut answers, every answer checked, new routes and fresh address details after failures (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/swarm-client-test.mjs')], { stdio: 'pipe', timeout: 120000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`swarm client ${m[1]}/${m[1]}`) : fail('swarm client: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('swarm client — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n55. Sending to contacts\' mailbox peers: held for the mailbox, every answer, the second copy, sending directly when collection isn\'t working, the outcomes, a restart, the rules under random events (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/swarm-send-test.mjs')], { stdio: 'pipe', timeout: 180000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`swarm send ${m[1]}/${m[1]}`) : fail('swarm send: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('swarm send — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n56. Mailbox sending with the real backend and, with MAILBOX_PEER_DIR, the real peer: held, dropped, collected, ✓; a call invite\'s copy; direct-only stays direct (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/swarm-e2e-test.mjs')], { stdio: 'pipe', timeout: 180000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`swarm end to end ${m[1]}/${m[1]}` + (m[1] === '0' ? ' (MAILBOX_PEER_DIR not set)' : '')) : fail('swarm end to end: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('swarm end to end — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n57. Our own mailbox, with MAILBOX_PEER_DIR against the real peer: joining with an invite, a token per contact, the details frame, live collection and sessions, every ack, a key rotated, a contact removed, leaving (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/swarm-collect-test.mjs')], { stdio: 'pipe', timeout: 300000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`swarm collect ${m[1]}/${m[1]}` + (m[1] === '0' ? ' (MAILBOX_PEER_DIR not set)' : '')) : fail('swarm collect: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('swarm collect — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n58. Both halves, with MAILBOX_PEER_DIR: two real backends and the real peer; Bob joins, Ana writes, Bob collects, ✓; copies, a bad stamp, a missing stamp key, a call\'s copy, leaving (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/swarm-owner-e2e-test.mjs')], { stdio: 'pipe', timeout: 300000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`swarm both halves ${m[1]}/${m[1]}` + (m[1] === '0' ? ' (MAILBOX_PEER_DIR not set)' : '')) : fail('swarm both halves: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('swarm both halves — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
+console.log('\n59. Switching, removing and turning off, with MAILBOX_PEER_DIR against two real peers: the old peer drains 8 days (collected, not in contacts\' details), a last collection before any peer is left, a failed switch changes nothing, Turn off, a restore while a peer drains (needs `npm install`)');
+try {
+  const out = execFileSync('node', [join(root, 'tools/swarm-switch-test.mjs')], { stdio: 'pipe', timeout: 300000 }).toString();
+  const m = out.match(/(\d+) passed, (\d+) failed/);
+  (m && m[2] === '0') ? pass(`swarm switch ${m[1]}/${m[1]}` + (m[1] === '0' ? ' (MAILBOX_PEER_DIR not set)' : '')) : fail('swarm switch: ' + (m ? m[0] : 'no summary'));
+} catch (e) { fail('swarm switch — ' + ((e.stdout?.toString().match(/✗ .*/g) || [e.message.split('\n')[0]]).join(' | '))); }
+
 console.log('\n' + (failures === 0 ? '\x1b[32m✅ ALL CHECKS PASSED\x1b[0m' : `\x1b[31m❌ ${failures} CHECK(S) FAILED\x1b[0m`) + '\n');
 process.exit(failures === 0 ? 0 : 1);

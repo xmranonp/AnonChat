@@ -136,7 +136,7 @@ async function makeParty(name, address) {
     applyReaction: () => {}, selected: null, selectedGroup: null, sessionUrls: new Map(), sessionBlobs: new Map(),
     peers: P.peers, _peerFetches: new Map(), groups: P.groups, heldGroupFrames: [], HELD_GROUP_TTL: 10 * 60 * 1000, MAX_HELD_GROUP: 100,
     MEDIA_KINDS: new Set(['image', 'video', 'audio', 'voice', 'file']), SHOWN_KINDS: new Set(['text', 'image', 'video', 'audio', 'voice', 'file']), MAX_EMOJI_LEN: constOf('MAX_EMOJI_LEN'), FRAME_KIND_RE: constOf('FRAME_KIND_RE'),
-    THUMB_RE: constOf('THUMB_RE'), OFFLINE_TTL_DEFAULT: constOf('OFFLINE_TTL_DEFAULT'), MEMBER_ADDR_RE: constOf('MEMBER_ADDR_RE'), OPK_USE_MS: 7 * 24 * 3600 * 1000,
+    THUMB_RE: constOf('THUMB_RE'), OFFLINE_TTL_DEFAULT: constOf('OFFLINE_TTL_DEFAULT'), OFFLINE_TTL_OPTIONS: [3600, 43200, 86400, 259200, 604800], prefs: { offlineTtl: {} }, SW_KINDS: constOf('SW_KINDS'), MEMBER_ADDR_RE: constOf('MEMBER_ADDR_RE'), OPK_USE_MS: 7 * 24 * 3600 * 1000,
     offerNewSession: (a, force, why) => { (P.offers = P.offers || []).push({ a, why }); },
     tellNowARequest: (a) => { (P.told = P.told || []).push(a); },
     _parkedFrom: new Set(), _parkRetry: new Map(), contactsLoaded: Promise.resolve(), setTimeout,

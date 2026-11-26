@@ -1148,10 +1148,13 @@ function markProcessed(id) {
   localStorage.setItem(LS.processed, JSON.stringify(arr));
 }
 
+const SW_KINDS = new Set(['text', 'image', 'video', 'audio', 'voice', 'file', 'accept', 'read', 'reaction']);
 function encodeFrame(kind, meta, payload) {
   // at: when it was written, by the writer's clock (inside the encryption). Compared only with other times from the same writer (see
   // "late copy" in handleInbound), so clocks that differ between computers don't matter.
-  const head = te.encode(JSON.stringify({ kind, meta: { ...(meta || {}), at: Date.now() } }));
+  // sw: 1 (1.1.0): this app reads mailbox details (design section 7), on the frames every contact sees now and then.
+  const sw = SW_KINDS.has(kind) ? { sw: 1 } : {};
+  const head = te.encode(JSON.stringify({ kind, meta: { ...(meta || {}), ...sw, at: Date.now() } }));
   const len = new Uint8Array(4); new DataView(len.buffer).setUint32(0, head.length);
   return concat(len, head, payload || new Uint8Array(0));
 }
@@ -2642,6 +2645,155 @@ async function ensureSession(contact) {
 // Both wrote first and their session won the tie-break: everything we wrote on ours is unreadable for them. What is still waiting in the
 // queue on ours is taken out (a late copy would only fail on their side), and the text we wrote since ours started is sent again on
 // theirs, with the same message ids, so nothing shows twice. Before an answer only text can be sent, so text is all there is.
+// ---- Mailbox swarm: our own details (design section 7). The backend makes and keeps them; the window only carries the frame.
+const _capableTold = new Set();
+function swarmCapable(addr) {
+  if (_capableTold.has(addr)) return;
+  _capableTold.add(addr);
+  fetch('/api/swarm/capable', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: addr }) })
+    .then((r) => r.json()).then((j) => { if (j.send) sendSwarmDetails(addr); }).catch(() => { _capableTold.delete(addr); });
+}
+const _detailsSending = new Set();
+async function sendSwarmDetails(addr) {
+  const contact = contactByAddress(addr);
+  if (!contact || _detailsSending.has(addr)) return;
+  _detailsSending.add(addr);
+  try {
+    const { details } = await fetch('/api/swarm/details-for?address=' + encodeURIComponent(addr)).then((r) => r.json());
+    if (!details) return;
+    await deliver(contact, encodeFrame('swarm', details, new Uint8Array(0)));
+    await fetch('/api/swarm/details-sent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: addr, seq: details.seq }) });
+  } catch {} finally { _detailsSending.delete(addr); }
+}
+async function sendDueSwarmDetails() {
+  try { const { contacts: due } = await fetch('/api/swarm/due').then((r) => r.json()); for (const a of due || []) sendSwarmDetails(a); } catch {}
+}
+// Calls already seen (rung, or logged as missed), so a mailbox copy adds nothing: kept 7 days.
+function callSeenMap() { try { const m = JSON.parse(localStorage.getItem('anyonechat.callsSeen') || '{}'); return m && typeof m === 'object' ? m : {}; } catch { return {}; } }
+function callSeenOf(id) { const v = callSeenMap()[id]; return v ? (typeof v === 'number' ? { t: v } : v) : null; }
+function noteCallSeen(id, extra = {}) {
+  const m = callSeenMap(), now = Date.now();
+  const cur = callSeenOf(id) || {};
+  m[id] = { ...cur, t: cur.t || now, ...extra };
+  for (const [k, v] of Object.entries(m)) if (now - (typeof v === 'number' ? v : v.t || 0) > 7 * 86400000) delete m[k];
+  try { localStorage.setItem('anyonechat.callsSeen', JSON.stringify(m)); } catch {}
+}
+// Settings → Mailbox swarm (test builds): our peers, join with an invite, leave.
+const SWARM_JOIN_ERRORS = ['invite-unknown', 'invite-used', 'invite-expired', 'bad-address', 'already', 'too-many', 'full', 'not-allowed', 'not-found'];
+// One sentence per problem (design section 15); peers named by their short address
+const fmtOff = (m) => (m >= 120 ? t('swarm.hours', { n: Math.round(m / 60) }) : t('swarm.minutes', { n: m }));
+function problemText(p) {
+  const peer = p.peer ? shortAddr(p.peer) : '';
+  switch (p.code) {
+    case 'all-unreachable': return t('swarm.p.allUnreachable');
+    case 'peer-unreachable': return t('swarm.p.peerUnreachable', { peer, t: new Date(p.since).toLocaleString() });
+    case 'peer-gone-week': return t('swarm.p.goneWeek', { peer });
+    case 'mailbox-lost': return t('swarm.p.lost', { peer });
+    case 'nearly-full': return t('swarm.p.nearlyFull', { peer });
+    case 'clock-off-mine': return t('swarm.p.clockOff', { n: fmtOff(p.minutes) });          // every peer agrees: it's this computer
+    case 'clock-off': return t('swarm.p.clockOffPeer', { peer, n: fmtOff(p.minutes) });     // one peer disagrees: theirs or ours
+    default: return '';
+  }
+}
+const fmtBytes = (n) => (n >= 1048576 ? (n / 1048576).toFixed(n >= 10485760 ? 0 : 1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
+async function renderSwarmSettings(box) {
+  let st; try { st = await fetch('/api/swarm/own').then((r) => r.json()); } catch { return; }
+  if (!st || (!st.joinAllowed && !(st.peers || []).length)) { box.innerHTML = ''; return; }
+  box.innerHTML = '';
+  const post = (path, body) => fetch('/api/swarm/' + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+  box.append(el('h4', { className: 'set-title', style: 'margin-top:24px', textContent: t('swarm.title') }), el('div', { className: 'set-desc', textContent: t('swarm.desc') }));
+  for (const pr of st.problems || []) { const txt = problemText(pr); if (txt) box.append(el('div', { className: 'swarm-problem', role: 'status', textContent: '\u26a0 ' + txt })); }
+  // The add/switch form: the peer's address and an invite. switchFrom: the peer it replaces (that one then drains 8 days).
+  const joinForm = (switchFrom) => {
+    const addr = el('input', { type: 'text', className: 'set-input', id: switchFrom ? 'swarm-switch-addr' : 'swarm-join-addr', placeholder: t('swarm.addrPh'), spellcheck: false, autocomplete: 'off' });
+    const inv = el('input', { type: 'text', className: 'set-input', id: switchFrom ? 'swarm-switch-invite' : 'swarm-join-invite', placeholder: t('swarm.invitePh'), spellcheck: false, autocomplete: 'off' });
+    const go = el('button', { type: 'button', className: 'set-pill', id: switchFrom ? 'swarm-switch-btn' : 'swarm-join-btn', textContent: switchFrom ? t('swarm.switchBtn') : t('swarm.join') });
+    const msg = el('div', { className: 'set-desc', id: switchFrom ? 'swarm-switch-msg' : 'swarm-join-msg' });
+    go.onclick = async () => {
+      go.disabled = true; msg.textContent = switchFrom ? t('swarm.switching') : t('swarm.joining');
+      try {
+        const r = await post(switchFrom ? 'switch' : 'join', { ...(switchFrom ? { from: switchFrom } : {}), address: addr.value, invite: inv.value });
+        const j = await r.json();
+        // no route to the peer yet: the app keeps trying and finishes by itself (the peer is listed as joining meanwhile)
+        if (r.status === 202 && j.pending) { msg.textContent = t('swarm.pending'); setTimeout(() => renderSwarmSettings(box), 2500); return; }
+        if (!r.ok && j.error === 'cancelled') { renderSwarmSettings(box); return; }          // the person cancelled it meanwhile: nothing to say
+        if (!r.ok) { const k = SWARM_JOIN_ERRORS.includes(j.error) ? j.error : 'failed'; msg.textContent = t('swarm.err.' + k); go.disabled = false; return; }
+        renderSwarmSettings(box);
+      } catch { msg.textContent = t('swarm.err.failed'); go.disabled = false; }
+    };
+    const row = el('div', { className: 'swarm-join' + (switchFrom ? ' swarm-switch' : '') });
+    row.append(el('div', { className: 'set-row-label', textContent: switchFrom ? t('swarm.switchTo', { peer: shortAddr(switchFrom) }) : t('swarm.add') }), addr, inv, go, msg);
+    return row;
+  };
+  for (const p of st.peers) {
+    const row = el('div', { className: 'set-opt-row swarm-peer', 'data-state': p.state });
+    const text = el('div', { style: 'flex:1' });
+    const last = p.lastCollect ? t('swarm.lastCollect', { t: new Date(p.lastCollect).toLocaleString() }) : t('swarm.notYet');
+    const status = p.state === 'leaving' ? t('swarm.leaving') : p.state === 'joining' ? t('swarm.joining')
+      : p.state === 'draining' ? (p.collectPending ? t('swarm.collectPending') : t('swarm.draining', { t: new Date(p.drainUntil).toLocaleDateString() }))
+      : p.lost ? t('swarm.lostShort')
+      : p.unreachableSince && Date.now() - p.unreachableSince > 2 * 60e3 ? t('swarm.unreachableSince', { t: new Date(p.unreachableSince).toLocaleString() })
+      : last + (p.quota ? ' \u00b7 ' + t('swarm.usage', { used: fmtBytes(p.heldBytes || 0), total: fmtBytes(p.quota) }) : '');
+    text.append(el('div', { className: 'set-row-label', textContent: shortAddr(p.address) }), el('div', { className: 'set-desc', textContent: status }));
+    const btns = el('div', { className: 'swarm-peer-btns' });
+    if (p.state === 'active' && st.joinAllowed) {
+      const sw = el('button', { type: 'button', className: 'set-pill swarm-switch-open', textContent: t('swarm.switch') });
+      sw.onclick = () => { const open = box.querySelector('.swarm-switch'); if (open) open.remove(); row.after(joinForm(p.address)); };
+      btns.append(sw);
+    }
+    if (p.state === 'draining' && !p.collectPending && st.joinAllowed) {
+      // still collected: it can be taken back as it is (no invite needed)
+      const keep = el('button', { type: 'button', className: 'set-pill swarm-keep', textContent: t('swarm.keep') });
+      keep.onclick = async () => { keep.disabled = true; try { await post('join', { address: p.address }); } catch {} renderSwarmSettings(box); };
+      btns.append(keep);
+    }
+    if (p.state !== 'leaving') {
+      const rm = el('button', { type: 'button', className: 'set-pill swarm-remove', textContent: t('swarm.remove') });
+      rm.onclick = async () => {
+        rm.disabled = true;          // before the question: a second click can't open a second one
+        if (!(await askConfirm(t('swarm.removeConfirm', { peer: shortAddr(p.address) }), t('swarm.remove')))) { rm.disabled = false; return; }
+        try { await post('leave', { address: p.address }); } catch {}
+        renderSwarmSettings(box);
+      };
+      btns.append(rm);
+    }
+    row.append(text, btns);
+    box.append(row);
+  }
+  if (st.joinAllowed) box.append(joinForm(null));
+  if ((st.peers || []).some((p) => p.state === 'active')) {
+    const off = el('button', { type: 'button', className: 'set-pill swarm-turn-off', id: 'swarm-turn-off', textContent: t('swarm.turnOff') });
+    off.onclick = async () => {
+      off.disabled = true;
+      if (!(await askConfirm(t('swarm.turnOffConfirm'), t('swarm.turnOff')))) { off.disabled = false; return; }
+      try { await post('turn-off'); } catch {}
+      renderSwarmSettings(box);
+    };
+    box.append(el('div', { className: 'set-opt-row' }, el('div', { style: 'flex:1' }, el('div', { className: 'set-row-label', textContent: t('swarm.turnOff') }), el('div', { className: 'set-desc', textContent: t('swarm.turnOffDesc') })), off));
+  }
+}
+
+// "Not confirmed · Send again": the same text with the same message id, so their app shows it once if the first did arrive.
+async function sendAgain(addr, id) {
+  const contact = contactByAddress(addr); if (!contact) return;
+  const thread = loadThread(addr);
+  const m = thread.find((x) => x.id === id && x.dir === 'out' && x.kind === 'text' && typeof x.text === 'string');
+  if (!m) return;
+  m.pending = true; delete m.failed; delete m.notConfirmed; delete m.mailbox; delete m.queueId;
+  persistField(LS.thread(addr), thread); if (selected === addr && !selectedGroup) renderConversation();
+  const ttl = m.expiresAt ? Math.max(1, Math.ceil((m.expiresAt - Date.now()) / 1000)) : undefined;
+  try {
+    const r = await deliver(contact, encodeFrame('text', { mid: m.id, ttl, replyTo: m.replyTo || undefined }, te.encode(m.text)), { offlineTtl: offlineTtlFor(addr), msgId: m.id });
+    const th = loadThread(addr), x = th.find((y) => y.id === id);
+    if (x) { if (r && r.queued) x.queueId = r.queueId; else delete x.pending; persistField(LS.thread(addr), th, tailIndex(th, x)); }
+  } catch (e) {
+    const th = loadThread(addr), x = th.find((y) => y.id === id);
+    if (x) { delete x.pending; x.failed = true; persistField(LS.thread(addr), th, tailIndex(th, x)); }
+    if (selected === addr && !selectedGroup) renderConversation();
+    throw e;
+  }
+  if (selected === addr && !selectedGroup) renderConversation();
+}
 async function resendOnAdoptedSession(contact, { ek, since }) {
   const addr = contact.address;
   try {
@@ -2672,7 +2824,7 @@ function shouldAdoptResponder(existing, x3dh) {
 
 // Until the other side has accepted our message request (or written to us), only text goes out: their app would hold anything else in
 // the request anyway. Group traffic is not affected. 'accept' is the silent signal an app sends when it accepts a request.
-const TEXT_ONLY_KINDS = new Set(['text', 'read', 'reaction', 'accept', 'request']);
+const TEXT_ONLY_KINDS = new Set(['text', 'read', 'reaction', 'accept', 'request', 'swarm']);
 function richSendAllowed(addr) {
   const s = loadSession(addr);
   return !!s && !s.asRequest && (s.role === 'responder' || s.confirmed === true);
@@ -2708,10 +2860,19 @@ function directTextOnly() {
 }
 
 async function deliver(contact, frameBytes, opts = {}) {
+  let route = 'direct-only', cls = 'text';
   {
     const f = decodeFrame(frameBytes);
     const groupTraffic = !!f.meta?.grp || f.kind.startsWith('group-');
     if (!TEXT_ONLY_KINDS.has(f.kind) && !groupTraffic && !richSendAllowed(contact.address)) throw textOnlyError(contact);
+    // Which frames may go to the contact's mailbox (design section 7): text, media, receipts, reactions, accepts, swarm frames. A call
+    // invite or cancel goes directly, plus a copy for the missed-call record. Everything else (other call messages, requests, group
+    // traffic for now) directly. The backend decides from there: only contacts whose details list peers have a mailbox.
+    if (!groupTraffic) {
+      if (MEDIA_KINDS.has(f.kind)) { route = 'swarm-ok'; cls = 'media'; }
+      else if (['text', 'read', 'reaction', 'accept', 'swarm'].includes(f.kind)) route = 'swarm-ok';
+      else if (f.kind === 'call' && (f.meta?.op === 'invite' || f.meta?.op === 'cancel')) route = 'direct+copy';
+    }
   }
   // Advancing the sending ratchet and persisting it must be atomic with respect to inbound processing: otherwise a concurrent receive can clone the session first and overwrite this chain step (see withSessionLock). Only the state change is locked; the network send runs outside the lock.
   const env = await withSessionLock(async () => {
@@ -2728,8 +2889,10 @@ async function deliver(contact, frameBytes, opts = {}) {
   });
   // The backend stamps the message with our shared stamp key; make sure it has the key (a contact or member just added).
   await ensureStampKey(contact).catch(() => {});
-  const body = { toAddress: contact.address, envelope: env };
+  const body = { toAddress: contact.address, envelope: env, route, class: cls };
   if (opts.offlineTtl) body.offlineTtl = opts.offlineTtl;
+  // Their mailbox keeps a message as long as they chose (up to 7 days); a time of our own only counts when the person chose one for them.
+  if (OFFLINE_TTL_OPTIONS.includes(Number(prefs.offlineTtl?.[contact.address]))) body.ttlChosen = true;
   if (opts.ephemeral) body.ephemeral = true;     // call signalling: delivered now or not at all, never queued
   if (opts.queueOnly) body.queueOnly = true;     // straight into the backend's queue: the caller doesn't wait on the network
   if (opts.msgId) body.msgId = opts.msgId;       // lets the outcome find this message even if its queue id never reached us
@@ -3290,6 +3453,31 @@ async function handleInbound(env) {
   const frame = cleanFrame(decodeFrame(pt));
   if (!frame) return;                    // not a message this app could show: dropped, the session step above is kept
 
+  // A contact's mailbox details (or their request for ours): before anything else, also on a new, unconfirmed session; from anyone who
+  // isn't a contact, ignored. The backend checks and keeps them; the window keeps nothing.
+  if (frame.kind === 'swarm') {
+    if (contact && frame.meta && Array.isArray(frame.meta.peers)) {
+      const { at: _at, sw: _sw, ...details } = frame.meta;
+      fetch('/api/swarm/details', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: env.from, details }) }).catch(() => {});
+      swarmCapable(env.from);          // a contact who sends details reads ours too
+    } else if (contact && Number.isSafeInteger(frame.meta?.req)) {
+      fetch('/api/swarm/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: env.from }) })
+        .then((r) => r.json()).then((j) => { if (j.send) sendSwarmDetails(env.from); }).catch(() => {});
+    }
+    return;
+  }
+  if (contact && frame.meta?.sw === 1) swarmCapable(env.from);
+  // A copy of a call invite or cancel collected from our mailbox: never rings; one "Missed call" per call, unless that call already
+  // reached us directly (design section 16).
+  if (env.src === 'mailbox' && frame.kind === 'call') {
+    const cid = typeof frame.meta?.id === 'string' ? frame.meta.id.slice(0, 64) : null;
+    if (contact && cid && (frame.meta.op === 'invite' || frame.meta.op === 'cancel') && !callSeenOf(cid)) {
+      noteCallSeen(cid, frame.meta.op === 'cancel' ? { cancelled: true } : {});
+      appendThread(env.from, { id: 'call-' + cid, dir: 'in', kind: 'system', text: t('call.log.missed'), ts: env.receivedAt || Date.now() });
+    }
+    return;
+  }
+
   // Someone who isn't a contact: only group traffic from a fellow member takes the normal path below; everything else is a message request.
   if (!contact && !isGroupFrameFromMember(env.from, frame)) {
     if (typeof frame.meta?.grp === 'string' && !frame.kind.startsWith('group-')) { applyGroupFrame(env, frame, !!work.verified); return; }
@@ -3325,10 +3513,24 @@ async function handleInbound(env) {
 
   if (frame.kind === 'read') { markMessagesRead(env.from, frame.meta?.ids || []); return; }
   if (frame.kind === 'call') {
-    // An invite that sat in the inbox (app locked, window closed) is not a live call any more: show it as missed instead of ringing.
-    if (frame.meta?.op === 'invite' && Date.now() - (env.receivedAt || Date.now()) > 60_000) {
-      if (contactByAddress(env.from)) appendThread(env.from, { id: 'call-' + env.id, dir: 'in', kind: 'system', text: t('call.log.missed'), ts: env.receivedAt });
-    } else calls.onSignal(env.from, frame.meta || {});
+    const cid = typeof frame.meta?.id === 'string' ? frame.meta.id.slice(0, 64) : null;
+    const op = frame.meta?.op;
+    const seen = cid ? callSeenOf(cid) : null;
+    const missed = (ts) => { if (contactByAddress(env.from)) appendThread(env.from, { id: 'call-' + (cid || env.id), dir: 'in', kind: 'system', text: t('call.log.missed'), ts }); };
+    if (op === 'invite') {
+      if (seen && seen.cancelled) return;          // its cancel came first (design section 16): it never rings
+      if (cid) noteCallSeen(cid);
+      // An invite that sat in the inbox (app locked, window closed) is not a live call any more: show it as missed instead of ringing.
+      if (Date.now() - (env.receivedAt || Date.now()) > 60_000) { if (!seen) missed(env.receivedAt); return; }
+      return calls.onSignal(env.from, frame.meta || {});
+    }
+    if (op === 'cancel' && cid) {
+      // A cancel for a call that never rang here (its invite was lost, or is still on its way): one "Missed voice call", and the invite,
+      // if it comes later, doesn't ring.
+      if (!seen) missed(env.receivedAt || Date.now());
+      noteCallSeen(cid, { cancelled: true });
+    }
+    calls.onSignal(env.from, frame.meta || {});
     return;
   }
 
@@ -3569,7 +3771,9 @@ async function _processEnvelopeInner(env) {
     console.warn(`[inbound] handle failed (attempt ${n}/${MAX_INBOUND_RETRIES})`, env.id, 'from', env.from, '-', e.message);
     _lastInboundError = { id: env.id, from: env.from, message: e.message, attempts: n, ts: Date.now() };
     const who = contactByAddress(env.from);
-    if (n === 1 && who) {                // strangers' undecryptable messages are dropped quietly: a toast per message would let anyone spam them
+    // strangers' undecryptable messages are dropped quietly (a toast per message would let anyone spam them), and so are mailbox copies:
+    // a copy collected from our mailbox that can't be read is an old session's, and the new-session offer above is all it needs
+    if (n === 1 && who && env.src !== 'mailbox') {
       toast(t('msg.decryptFail', { name: who.petname }));
     }
     if (n >= MAX_INBOUND_RETRIES) {
@@ -3657,6 +3861,33 @@ async function ackEnvelopes(ids) {
 }
 
 let ws = null;
+const _fullToldAt = new Map();          // a contact's mailbox is full: said once in 6 hours
+const _refusedTold = new Map();          // a contact's mailbox not taking our messages: said once in 6 hours
+let _problemsTold = {}; try { _problemsTold = JSON.parse(localStorage.getItem('anyonechat.swarmProblemsTold') || '{}') || {}; } catch {}
+// Each problem is said once a day as it appears (a clock set back, or an entry from the future, counts as not said); several at once
+// are said one after another, 11 s apart, not over each other. Settings lists them for as long as they last.
+const _problemQueue = []; let _problemTimer = null;
+function sayProblems(list) {
+  const now = Date.now();
+  for (const [k, v] of Object.entries(_problemsTold)) if (!(v <= now) || now - v > 24 * 3600e3) delete _problemsTold[k];
+  for (const p of Array.isArray(list) ? list : []) {
+    if (p.code === 'peer-unreachable') continue;          // one of several peers: shown in Settings only, the others carry on
+    const key = p.code + ' ' + (p.peer || '');
+    if (_problemsTold[key] || _problemQueue.some((q) => q.key === key)) continue;
+    const txt = problemText(p); if (!txt) continue;
+    _problemQueue.push({ key, txt });
+  }
+  try { localStorage.setItem('anyonechat.swarmProblemsTold', JSON.stringify(_problemsTold)); } catch {}
+  if (!_problemTimer) nextProblem();
+}
+function nextProblem() {
+  const q = _problemQueue.shift();
+  if (!q) { _problemTimer = null; return; }
+  _problemsTold[q.key] = Date.now();
+  try { localStorage.setItem('anyonechat.swarmProblemsTold', JSON.stringify(_problemsTold)); } catch {}
+  toast(q.txt, 10000);
+  _problemTimer = setTimeout(nextProblem, 11000);
+}
 // Every message shown as waiting (⏳) is checked against the backend whenever the window (re)connects. An outcome reported while the
 // window was closed or reloading (delivered, or not delivered in time) would otherwise never reach it, and ⏳ would stay for good.
 async function reconcileWaiting() {
@@ -3667,6 +3898,8 @@ async function reconcileWaiting() {
     outcomes = await fetch('/api/outbox/outcomes').then((r) => r.json()).then((j) => j.outcomes);
   } catch { return; }
   if (!Array.isArray(items) || !Array.isArray(outcomes)) return;
+  let inMailbox = new Set();
+  try { const st = await fetch('/api/swarm/states').then((r) => r.json()); inMailbox = new Set((st.states || []).filter((x) => x.shown === 'mailbox').map((x) => x.id)); } catch {}
   const byQueue = new Map(outcomes.map((o) => [o.id, o]));
   const byMsg = new Map(outcomes.filter((o) => o.msgId).map((o) => [o.msgId, o]));
   const queued = new Set(items.map((i) => i.id));
@@ -3685,8 +3918,8 @@ async function reconcileWaiting() {
     for (const m of thread) {
       if (m.dir !== 'out' || !(m.pending || m.queueId)) continue;
       const o = (m.queueId && byQueue.get(m.queueId)) || byMsg.get(m.id);
-      if (o) { delete m.pending; delete m.queueId; if (o.outcome !== 'delivered') m.failed = true; changed = true; continue; }
-      if (m.queueId && queued.has(m.queueId)) continue;                       // still waiting
+      if (o) { delete m.pending; delete m.queueId; delete m.mailbox; if (o.outcome !== 'delivered') { m.failed = true; if (o.outcome === 'not-confirmed') m.notConfirmed = true; } changed = true; continue; }
+      if (m.queueId && queued.has(m.queueId)) { if (inMailbox.has(m.queueId) && !m.mailbox) { m.mailbox = true; changed = true; } continue; }          // still waiting
       const q = queuedByMsg.get(m.id);
       if (q) { if (m.queueId !== q) { m.queueId = q; m.pending = true; changed = true; } continue; }   // waiting, its queue id never reached us
       // Neither waiting nor answered, a minute after it was written: it never reached the queue (the app closed while it was being
@@ -3749,7 +3982,13 @@ function connectWS() {
   try { ws = new WebSocket(`${proto}://${location.host}/ws`); }
   catch { setTimeout(connectWS, 3000); return; }
 
-  ws.onopen = () => { _wsEverConnected = true; setWsStatus(true); reconcileWaiting().catch(() => {}); };
+  ws.onopen = () => {
+    _wsEverConnected = true; setWsStatus(true); reconcileWaiting().catch(() => {}); sendDueSwarmDetails();
+    // the quit notice, in this language, for the desktop app (it has no texts of its own)
+    // problems that came up while no window was open (or before this one connected)
+    fetch('/api/swarm/own').then((r) => r.json()).then((j) => { if (j && Array.isArray(j.problems)) sayProblems(j.problems); }).catch(() => {});
+    fetch('/api/swarm/texts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ quit: t('swarm.quitNotice') }) }).catch(() => {});
+  };
   ws.onclose = () => { if (_wsEverConnected) setWsStatus(false); setTimeout(connectWS, 2000); };
   ws.onerror = () => ws.close();
   ws.onmessage = async (ev) => {
@@ -3759,15 +3998,16 @@ function connectWS() {
     if (msg.type === 'outbox:delivered' || msg.type === 'outbox:expired') {
       const { toAddress, id: queueId, msgId } = msg;
       const thread = loadThread(toAddress);
-      let changed = false, wasWaiting = false;
+      let changed = false;
       for (const m of thread) {
         // By queue id once the window knows it; by the message's own id while its first tries are still running (or if their answer never
         // came back: the window closed meanwhile).
         const byQueue = m.queueId === queueId, byId = !!msgId && m.id === msgId && (m.pending || m.queueId);
         if (byQueue || byId) {
-          if (m.queueId) wasWaiting = true;
           delete m.pending; delete m.queueId;
-          if (msg.type === 'outbox:expired') m.failed = true;
+          delete m.mailbox;
+          if (msg.type === 'outbox:expired') { m.failed = true; if (msg.outcome === 'not-confirmed') m.notConfirmed = true; }
+          else { delete m.failed; delete m.notConfirmed; }
           changed = true;
         }
       }
@@ -3776,7 +4016,54 @@ function connectWS() {
         if (selected === toAddress) renderConversation();
       }
       // Only for a message that was shown as waiting: receipts, reactions and group copies are queued too, and need no word.
-      if (changed && (wasWaiting || msg.type === 'outbox:expired')) toast(msg.type === 'outbox:delivered' ? t('msg.pendingDelivered') : t('msg.pendingExpired'));
+      // Only what went wrong is said: a waiting message that got through just turns ✓ (directly or from their mailbox, without a toast)
+      if (changed && msg.type === 'outbox:expired') toast(t('msg.pendingExpired'));
+      return;
+    }
+
+    // Mailbox sending (1.1.0): a message reached their mailbox (📮), they asked for fresh details, their mailbox is full.
+    if (msg.type === 'swarm:state') {
+      if (msg.shown !== 'mailbox' || typeof msg.toAddress !== 'string') return;
+      const thread = loadThread(msg.toAddress);
+      let changed = false;
+      for (const m of thread) {
+        if (m.dir !== 'out' || m.mailbox) continue;
+        if ((m.queueId && m.queueId === msg.id) || (msg.msgId && m.id === msg.msgId && m.pending)) { m.mailbox = true; changed = true; }
+      }
+      if (changed) { persistField(LS.thread(msg.toAddress), thread); if (selected === msg.toAddress && !selectedGroup) renderConversation(); }
+      return;
+    }
+    if (msg.type === 'swarm:want-details') {
+      const c = contactByAddress(msg.toAddress);
+      if (c) deliver(c, encodeFrame('swarm', { v: 1, req: Number.isSafeInteger(msg.seq) ? msg.seq : 0 }, new Uint8Array(0))).catch(() => {});
+      return;
+    }
+    if (msg.type === 'swarm:send-details') { if (typeof msg.toAddress === 'string') sendSwarmDetails(msg.toAddress); return; }
+    if (msg.type === 'swarm:own') {
+      const box = document.getElementById('swarm-settings');
+      // not while the person is typing an address or invite there (the form would be cleared under their hands)
+      const typing = box && box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT';
+      if (box && !typing && !document.getElementById('settings-overlay')?.hidden) renderSwarmSettings(box);
+      return;
+    }
+    if (msg.type === 'swarm:other-install') { toast(t('swarm.otherInstall'), 10000); return; }
+    if (msg.type === 'swarm:mailbox-gone') { toast(t('swarm.mailboxGone'), 10000); return; }
+    // The problems the app explains: each said once a day as it appears; Settings lists them while they last
+    if (msg.type === 'swarm:problems') {
+      sayProblems(msg.problems);
+      const box = document.getElementById('swarm-settings');
+      const typing = box && box.contains(document.activeElement) && document.activeElement.tagName === 'INPUT';
+      if (box && !typing && !document.getElementById('settings-overlay')?.hidden) renderSwarmSettings(box);
+      return;
+    }
+    if (msg.type === 'swarm:refused') {
+      const c = contactByAddress(msg.toAddress);
+      if (c && Date.now() - (_refusedTold.get(c.address) || 0) > 6 * 3600e3) { _refusedTold.set(c.address, Date.now()); toast(t('swarm.contactRefused', { name: c.petname }), 8000); }
+      return;
+    }
+    if (msg.type === 'swarm:full') {
+      const c = contactByAddress(msg.toAddress);
+      if (c && !_fullToldAt.has(c.address)) { _fullToldAt.set(c.address, Date.now()); toast(t('swarm.full', { name: c.petname }), 8000); setTimeout(() => _fullToldAt.delete(c.address), 6 * 3600 * 1000); }
       return;
     }
 
@@ -4600,8 +4887,19 @@ function renderBubble(m, index, cont = false) {
   if (m.dir === 'in' && m.kind !== 'error')
     stamp.append(el('span', { className: 'verify ' + (m.verified ? 'ok' : 'warn'), textContent: m.verified ? ' \u2713 ' + t('msg.verifiedTag') : ' \u26a0 ' + t('msg.unverifiedTag') }));
   if (m.dir === 'out' && m.kind !== 'error') {
-    if (m.pending) {
+    if (m.pending && m.mailbox) {
+      stamp.append(el('span', { className: 'receipt-tick mailbox', title: t('msg.inMailbox'), textContent: ' \ud83d\udcee' }));
+    } else if (m.pending) {
       stamp.append(el('span', { className: 'receipt-tick pending', title: t('msg.pending'), textContent: ' \u23f3' }));
+    } else if (m.failed && m.notConfirmed) {
+      // It waited in their mailbox to the end and was never collected: we can't tell whether they got it. Text can go again (same id:
+      // their app shows it once).
+      stamp.append(el('span', { className: 'receipt-tick failed', title: t('msg.notConfirmedTip'), textContent: ' \u26a0 ' + t('msg.notConfirmed') }));
+      if (m.kind === 'text' && !selectedGroup && selected) {
+        const again = el('button', { className: 'send-again', type: 'button', textContent: t('msg.sendAgain') });
+        again.addEventListener('click', (e) => { e.stopPropagation(); sendAgain(selected, m.id).catch(() => toast(t('toast.failed'))); });
+        stamp.append(document.createTextNode(' \u00b7 '), again);
+      }
     } else if (m.failed) {
       stamp.append(el('span', { className: 'receipt-tick failed', title: t('msg.pendingExpired'), textContent: ' \u26a0 ' + t('msg.undelivered') }));
     } else {
@@ -6971,7 +7269,11 @@ function openCreateBackupDialog() {
         const [hs, contactsList, peersList, groupsList, blocked, settings] = await Promise.all([
           getJson('/api/backup/hs'), getJson('/api/contacts'), getJson('/api/peers'), getJson('/api/groups'), getJson('/api/blocked'), getJson('/api/settings')]);
         if (!myAddress || hs.hostname !== myAddress) throw new Error('address not ready');
+        // the mailbox: our peers' owner secrets and keys, and contacts' details (1.1.0); a backup without it still restores everything else
+        let swarm = null;
+        { const r = await fetch('/api/swarm/backup'); if (!r.ok) throw new Error('mailbox not ready: ' + r.status); swarm = (await r.json()).swarm || null; }          // never a backup that silently leaves the mailbox out
         const payload = Backup.buildPayload({
+          swarm,
           address: hs.hostname, hs,
           identity: { ikPriv: ikPrivJwk, ikPub, spk, ikSig },
           contacts: contactsList, peers: peersList, groups: groupsList, blocked, settings,
@@ -7137,8 +7439,9 @@ async function finishRestore(p) {
     await pinSaveKeys(pinKey);                 // always the restored keys, even if something saved fresh ones earlier
     await ensureIdentity();
     const r = await fetch('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hs: p.hs, contacts: p.contacts, peers: p.peers, groups: p.groups, blocked: p.blocked, settings: p.settings }) });
+      body: JSON.stringify({ hs: p.hs, contacts: p.contacts, peers: p.peers, groups: p.groups, blocked: p.blocked, settings: p.settings, ...(p.swarm ? { swarm: p.swarm } : {}) }) });
     if (!r.ok) throw new Error('restore ' + r.status);
+    try { const j = await r.clone().json(); if (j.mailboxError === 'too-new') localStorage.setItem('anyonechat.restoreSwarmTooNew', '1'); } catch {}
     localStorage.setItem(RESTORED_FLAG, '1');
     await Promise.allSettled([...persistQueues.values()]);
     msg.textContent = t('backup.restarting');
@@ -7154,6 +7457,7 @@ async function finishRestore(p) {
 // pinned identity key), so both sides can write again at once.
 function resyncAfterRestore() {
   localStorage.removeItem(RESTORED_FLAG);
+  if (localStorage.getItem('anyonechat.restoreSwarmTooNew')) { localStorage.removeItem('anyonechat.restoreSwarmTooNew'); toast(t('backup.swarmTooNew'), 12000); }
   const seen = new Set();
   for (const h of [...contacts, ...peers]) { if (seen.has(h.address)) continue; seen.add(h.address); offerNewSession(h.address, true); }
   // The member lists came from the backup: anyone who joined or left since (or while this app was being restored) is missing from them.
@@ -7399,6 +7703,9 @@ function openSettingsDialog(focus) {
     dialog.append(row, showRow);
   }
 
+  // Mailbox swarm (1.1.0 test builds): shown when joining is allowed here, or when peers are already joined.
+  { const box = el('div', { id: 'swarm-settings' }); dialog.append(box); renderSwarmSettings(box).catch(() => {}); }
+
   // Both toggles default to OFF: a privacy-first app shouldn't broadcast presence or read state without an explicit opt-in.
   dialog.append(el('h4', { className: 'set-title', style: 'margin-top:24px', textContent: t('settings.privacy') }));
 
@@ -7582,7 +7889,9 @@ function openSettingsDialog(focus) {
   close.onclick = () => { overlay.hidden = true; };
   const about = el('button', { className: 'about-link', type: 'button', textContent: t('settings.about') });
   about.onclick = () => openAboutDialog();
-  closeRow.append(about, close);
+  const report = el('button', { className: 'about-link', id: 'report-link', type: 'button', textContent: t('report.title') });
+  report.onclick = () => openReportDialog();
+  closeRow.append(about, report, close);
   dialog.append(closeRow);
 
   overlay.append(dialog);
@@ -7656,6 +7965,57 @@ function openAboutDialog() {
   overlay.onclick = (e) => { if (e.target === overlay) close(); };
   closeBtn.focus({ preventScroll: true });
   dialog.scrollTop = 0;
+}
+
+// Report an issue: the address to write to and the app's details, each with Copy (opening a mail program would connect outside the
+// Anyone network). The details name nothing personal: no address, contacts or messages. They stay in English, for whoever reads them.
+const REPORT_EMAIL = 'xmranonp@tuta.io';
+function appDetails(version) {
+  const ua = navigator.userAgent || '';
+  const os = /Windows/i.test(ua) ? 'Windows' : /Mac OS X|Macintosh/i.test(ua) ? 'macOS' : /Android/i.test(ua) ? 'Android' : /Linux/i.test(ua) ? 'Linux' : 'other';
+  const arch = /arm64|aarch64/i.test(ua) ? 'arm64' : /x86_64|x64|Win64|amd64/i.test(ua) ? 'x64' : '';
+  const electron = (ua.match(/Electron\/([\d.]+)/) || [])[1];
+  return [`AnonChat ${version || '?'}`, `${os}${arch ? ' ' + arch : ''}`, electron ? `Electron ${electron}` : 'browser',
+    `network: ${_netReady ? 'connected' : 'not connected'}`, `language: ${getLang()}`].join(' · ');
+}
+function openReportDialog() {
+  let overlay = document.getElementById('report-overlay');
+  if (!overlay) { overlay = el('div', { id: 'report-overlay', className: 'confirm-overlay about-overlay' }); document.body.append(overlay); }
+  overlay.innerHTML = '';
+  overlay.hidden = false;
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  function close() { overlay.hidden = true; document.removeEventListener('keydown', onKey, true); }
+  document.addEventListener('keydown', onKey, true);
+
+  const dialog = el('div', { className: 'about-dialog', role: 'dialog' });
+  dialog.setAttribute('aria-modal', 'true');
+  dialog.setAttribute('aria-labelledby', 'report-title');
+  const version = el('div', { className: 'about-version' });
+  dialog.append(el('div', { className: 'about-head' },
+    el('img', { className: 'about-mark', src: '/app-icon.png', alt: '', width: 40, height: 40 }),
+    el('div', {}, el('h3', { id: 'report-title', textContent: t('report.title') }), version)));
+  const copyRow = (label, code, getValue, toastKey, id) => {
+    const btn = el('button', { type: 'button', className: 'set-pill', id, textContent: t('groups.copyCode') });
+    btn.onclick = async () => { try { await navigator.clipboard.writeText(getValue()); toast(t(toastKey)); } catch {} };
+    return el('div', { className: 'about-copy' },
+      el('div', { className: 'about-copy-label', textContent: label }),
+      el('div', { className: 'about-copy-row' }, code, btn));
+  };
+  const details = el('code', { className: 'about-code report-details', textContent: appDetails('') });
+  let detailsText = appDetails('');
+  fetch('/api/version').then((r) => r.json()).then((v) => {
+    if (v.version) { version.textContent = t('about.version', { v: v.version }); detailsText = appDetails(v.version); details.textContent = detailsText; }
+  }).catch(() => {});
+  dialog.append(el('p', { className: 'about-p', textContent: t('report.intro') }),
+    copyRow(t('report.email'), el('code', { className: 'about-code', textContent: REPORT_EMAIL }), () => REPORT_EMAIL, 'report.copiedEmail', 'report-copy-email'),
+    copyRow(t('report.details'), details, () => detailsText, 'report.copiedDetails', 'report-copy-details'),
+    el('p', { className: 'about-p report-warn', textContent: t('report.warn') }));
+  const closeBtn = el('button', { className: 'confirm-cancel', type: 'button', textContent: t('nav.close') });
+  closeBtn.onclick = close;
+  dialog.append(el('div', { className: 'confirm-actions about-foot' }, closeBtn));
+  overlay.append(dialog);
+  overlay.onclick = (e) => { if (e.target === overlay) close(); };
+  closeBtn.focus({ preventScroll: true });
 }
 
 (function addSettingsButton() {

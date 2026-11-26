@@ -12,6 +12,7 @@ const { spawn } = require('child_process');
 const DEBUG_UI = !app.isPackaged;
 if (app.isPackaged) {
   delete process.env.ANONCHAT_DEBUG;
+  delete process.env.ANONCHAT_SWARM_TEST;          // joining a mailbox peer: test runs from source only, never an installed app
   const guard = require('./debug-guard');
   const bad = guard.refusedSwitch(process.argv.slice(1)) || guard.refusedParsedSwitch(app.commandLine);
   if (bad) {
@@ -945,13 +946,59 @@ app.on('before-quit', (e) => {
   if (backendStopped) return;
   e.preventDefault();
   for (const w of BrowserWindow.getAllWindows()) { try { w.hide(); } catch {} }
-  stopBackend().then(() => { backendStopped = true; app.quit(); });
+  flushMailboxDrops(20000).then(() => stopBackend()).then(() => { backendStopped = true; app.quit(); });
 });
+
+// Before the backend stops: messages due at contacts' mailbox peers get up to `ms` to leave (design section 9: 20 s on quit, 5 s at
+// logoff or shutdown). Returns at once when nothing is due; a photo that can't finish in time starts again at the next start.
+let _flushing = null;
+function flushMailboxDrops(ms) {
+  // A second call (a SIGTERM during the quit's 20 s, say) waits only its own time, not the first one's.
+  if (_flushing) return Promise.race([_flushing, new Promise((r) => setTimeout(r, ms))]);
+  _flushing = new Promise((resolve) => {
+    // first: is anything waiting to leave? If so, say so (in the person's language: the window handed the text over), then wait
+    const ask = http.request({ host: '127.0.0.1', port: UI_PORT, path: '/api/swarm/pending', method: 'GET', headers: { [UI_TOKEN_HEADER]: UI_TOKEN }, timeout: 2000 }, (r) => {
+      let b = ''; r.on('data', (x) => { b += x; }); r.on('error', flush); r.on('aborted', flush); r.on('end', () => {
+        try {
+          const j = JSON.parse(b);
+          if (j.count > 0 && typeof j.text === 'string' && j.text) { const { Notification } = require('electron'); if (Notification.isSupported()) new Notification({ title: 'AnonChat', body: j.text, silent: true }).show(); }
+        } catch {}
+        flush();
+      });
+    });
+    ask.on('error', flush); ask.on('timeout', () => { ask.destroy(); });
+    ask.end();
+    let started = false;
+    // never longer than asked, whatever the backend does
+    const cap = setTimeout(resolve, ms + 5000);
+    function done() { clearTimeout(cap); resolve(); }
+    function flush() {
+    if (started) return; started = true;
+    const body = JSON.stringify({ ms });
+    const req = http.request({ host: '127.0.0.1', port: UI_PORT, path: '/api/swarm/flush', method: 'POST',
+      headers: { [UI_TOKEN_HEADER]: UI_TOKEN, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }, timeout: ms + 3000 }, (res) => { res.resume(); res.on('end', done); res.on('error', done); res.on('aborted', done); });
+    req.on('error', done); req.on('timeout', () => { req.destroy(); done(); });
+    req.end(body);
+    }
+  });
+  return _flushing;
+}
 
 // If we go down some other way, still don't leave the backend group behind.
 process.on('exit', () => {
   if (proctree && backendPid && proctree.groupAlive(backendPid)) proctree.killTreeSync(backendPid);
 });
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
-  process.on(sig, () => { stopBackend().then(() => process.exit(0)); });
+  process.on(sig, () => { flushMailboxDrops(5000).then(() => stopBackend()).then(() => process.exit(0)); });
 }
+// Logoff and shutdown (Windows session-end; powerMonitor's shutdown on Linux and macOS): the same, with 5 s.
+app.on('session-end', () => { flushMailboxDrops(5000).catch(() => {}); });
+app.whenReady().then(() => {
+  try {
+    require('electron').powerMonitor.on('shutdown', (e) => {
+      if (backendStopped) return;
+      try { e.preventDefault(); } catch {}
+      flushMailboxDrops(5000).then(() => stopBackend()).then(() => { backendStopped = true; app.quit(); });
+    });
+  } catch {}
+});

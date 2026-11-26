@@ -73,6 +73,16 @@ ok('a newer format version says so', await rejects(B.decryptBackup(new TextEncod
 ok('a short passphrase is refused when saving', await rejects(B.encryptBackup(payload, 'short')));
 const wrongAddr = { ...payload, address: hsKey().address, hs: { ...payload.hs } }; wrongAddr.hs.hostname = wrongAddr.address;
 ok('a key that doesn’t match its address is refused', B.checkPayload(wrongAddr).includes('address does not match its key'));
+{
+  // 1.1.0: the mailbox field (our peers' owner secrets, keys and contacts' tokens; contacts' details), optional and versioned inside
+  const swarm = { v: 1, seq: 5, keepFor: 604800, capable: [FRIEND], peers: [{ address: 'p'.repeat(56) + '.anyone', mailbox: '0'.repeat(32), secret: 's', key: { kid: '1'.repeat(16), pk: 'p', sk: 'k' }, tokens: { [FRIEND]: 't' } }], contacts: {} };
+  const withSwarm = { ...payload, swarm };
+  ok('the mailbox field goes in only when there is one', !('swarm' in payload) && 'swarm' in B.buildPayload({ ...payload, identity: payload.identity, swarm }));
+  ok('a payload with the mailbox field checks clean, and comes back whole', B.checkPayload(withSwarm).length === 0
+    && JSON.stringify((await B.decryptBackup(await B.encryptBackup(withSwarm, PW, { iterations: 100_000 }), PW)).swarm) === JSON.stringify(swarm));
+  ok('a mailbox field without its version is refused', B.checkPayload({ ...payload, swarm: { peers: [] } }).includes('swarm'));
+  ok('a newer mailbox version still opens (the backend leaves it out and says so)', B.checkPayload({ ...payload, swarm: { ...swarm, v: 2 } }).length === 0);
+}
 ok('missing identity keys are refused', B.checkPayload({ ...payload, identity: { ...payload.identity, ikSig: null } }).includes('identity keys'));
 ok('a bad contact address is refused', B.checkPayload({ ...payload, contacts: [{ address: 'nope', ecdhPub: 'K' }] }).includes('contacts'));
 // Keys that don't belong together: the file opens with its passphrase, but the identity in it could never start a chat.

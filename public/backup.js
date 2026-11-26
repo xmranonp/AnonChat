@@ -70,6 +70,8 @@ export function checkPayload(p) {
   if (p.settings != null && !isObj(p.settings)) problems.push('settings');
   if (p.profile != null && !isObj(p.profile)) problems.push('profile');
   if (p.prefs != null && !isObj(p.prefs)) problems.push('prefs');
+  // the mailbox (1.1.0): optional, versioned inside; a newer v is a newer app's, left out at restore (the backend says so), not damage
+  if (p.swarm != null && (!isObj(p.swarm) || !Number.isInteger(p.swarm.v) || p.swarm.v < 1)) problems.push('swarm');
   return problems;
 }
 
@@ -104,7 +106,7 @@ async function keysPair(p) {
 // so are presence fields the backend adds when it lists contacts. Contacts' and group members' pictures are left out too: they are
 // theirs, their apps serve them, and this app fetches them again when they next write. With them, a backup of many people with large
 // pictures could grow past what a restore can take.
-export function buildPayload({ address, hs, identity, contacts, peers, groups, blocked, settings, profile, prefs, now = Date.now() }) {
+export function buildPayload({ address, hs, identity, contacts, peers, groups, blocked, settings, profile, prefs, swarm = null, now = Date.now() }) {
   const strip = (c) => { const { online, lastSeen, opkId, opkPub, avatar, ...rest } = c; return rest; };
   return {
     format: FORMAT, v: VERSION, createdAt: now, address,
@@ -119,6 +121,8 @@ export function buildPayload({ address, hs, identity, contacts, peers, groups, b
     settings: settings ? { acceptRequests: settings.acceptRequests, powAlways: settings.powAlways, readReceipts: settings.readReceipts } : {},
     profile: profile || {},
     prefs: prefs || {},
+    // our mailbox peers (owner secrets, seal keys, contacts' tokens) and contacts' mailbox details: only when there is something
+    ...(swarm && isObj(swarm) && ((swarm.peers || []).length || Object.keys(swarm.contacts || {}).length) ? { swarm } : {}),
   };
 }
 
